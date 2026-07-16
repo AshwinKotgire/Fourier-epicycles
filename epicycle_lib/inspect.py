@@ -13,8 +13,12 @@ BG = (22, 22, 22)
 NORMAL = (80, 200, 90)
 JUMP = (230, 70, 60)
 TRACE = (255, 220, 60)
+WARN = (255, 120, 80)
+OK = (150, 200, 150)
 PANEL_H = 720
 TITLE_H = 36
+STATS_H = 26
+JUMP_BUDGET_WARN = 0.15  # warn when jumps eat more than 15% of the path
 
 
 def _draw_polyline(draw: ImageDraw.ImageDraw, xs: np.ndarray, ys: np.ndarray,
@@ -42,6 +46,16 @@ def _left_panel(data: PathData) -> Image.Image:
     base = base.resize((max(1, int(base.width * scale)), PANEL_H))
     draw = ImageDraw.Draw(base)
     _draw_polyline(draw, xs * scale, ys * scale, data.jump_mask, NORMAL, JUMP, 2)
+    # number the contours in draw order at each contour's starting point
+    contour = 0
+    mask = data.jump_mask
+    for i in range(len(mask)):
+        if not mask[i] and (i == 0 or mask[i - 1]):
+            contour += 1
+            x, y = xs[i] * scale, ys[i] * scale
+            draw.ellipse([x - 9, y - 9, x + 9, y + 9],
+                         fill=(30, 30, 30), outline=NORMAL)
+            draw.text((x, y), str(contour), fill=(240, 240, 240), anchor="mm")
     return base
 
 
@@ -67,16 +81,33 @@ def write_inspect(data: PathData, recon: np.ndarray, n_vectors: int,
     span_y = max(recon.imag.max() - recon.imag.min(), 1e-9)
     right = _right_panel(recon, data.jump_mask, span_x / span_y)
 
+    # effective-detail stats: reconstruction error at 1080p and jump budget
+    err_units = float(np.abs(recon - data.samples).mean())
+    err_px = err_units * (1080.0 / 8.0)  # manim frame height is 8 units
+    jump_share = float(data.jump_mask.mean())
+    stats = (f"recon error: {err_px:.1f}px @1080p   |   "
+             f"jumps: {jump_share:.0%} of path")
+    warnings = []
+    if err_px > 3.0:
+        warnings.append("high error - raise --vectors / lower --smooth")
+    if jump_share > JUMP_BUDGET_WARN:
+        warnings.append("jump-heavy - try --mode outline or more --vectors")
+
     gap = 16
     sheet = Image.new("RGB", (left.width + right.width + 3 * gap,
-                              PANEL_H + TITLE_H + 2 * gap), BG)
+                              PANEL_H + TITLE_H + STATS_H + 2 * gap), BG)
     sheet.paste(left, (gap, TITLE_H + gap))
     sheet.paste(right, (left.width + 2 * gap, TITLE_H + gap))
     draw = ImageDraw.Draw(sheet)
     draw.text((gap, 12), f"extracted chain - {data.n_contours} contours "
-                         f"(red = jumps)", fill=(200, 200, 200))
+                         f"(red = jumps, circles = draw order)",
+              fill=(200, 200, 200))
     draw.text((left.width + 2 * gap, 12),
               f"fourier reconstruction - {n_vectors} vectors", fill=(200, 200, 200))
+    stats_y = TITLE_H + PANEL_H + gap + 6
+    draw.text((gap, stats_y), stats, fill=OK if not warnings else WARN)
+    if warnings:
+        draw.text((gap + 420, stats_y), "  |  ".join(warnings), fill=WARN)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(out_path)
