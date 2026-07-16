@@ -74,6 +74,28 @@ class EpicycleScene(MovingCameraScene):
 
         return update
 
+    @staticmethod
+    def _head_updater(template: VMobject, s0: float, s1: float,
+                      tracker: ValueTracker, window: float):
+        """Reveal only the last `window` (in global t) of the run — the
+        glowing comet head that trails the pen when trace_fade is on."""
+        span = max(s1 - s0, 1e-9)
+        state = {"last": None}
+
+        def update(mobject: VMobject) -> None:
+            t = tracker.get_value()
+            hi = float(np.clip((t - s0) / span, 0.0, 1.0))
+            lo = float(np.clip((t - window - s0) / span, 0.0, 1.0))
+            if (lo, hi) == state["last"]:
+                return
+            state["last"] = (lo, hi)
+            if hi <= 0 or hi <= lo:
+                mobject.set_points(np.zeros((0, 3)))
+            else:
+                mobject.pointwise_become_partial(template, lo, hi)
+
+        return update
+
     def construct(self):
         s = self.s
         coeffs, freqs = self.coeffs, self.freqs
@@ -109,15 +131,37 @@ class EpicycleScene(MovingCameraScene):
                 ghost.add(vm)
             self.add(ghost)
 
-        # -- trace, revealed by t; jumps faint, normals glowing yellow
+        # -- trace, revealed by t; jumps faint, normals glowing yellow.
+        #    With trace_fade > 0 the settled path dims and only a comet head
+        #    (the most recent ~8% of the timeline) keeps the full glow.
         trace = VGroup()
+        fade = float(np.clip(s.trace_fade, 0.0, 1.0))
+        head_window = 0.08
         for a, b, jump in runs:
             template = VMobject()
             template.set_points_as_corners(path_points(recon_ext[a:b + 1]))
-            for width, opacity in (JUMP_LAYERS if jump else TRACE_LAYERS):
+            if jump or fade <= 0:
+                for width, opacity in (JUMP_LAYERS if jump else TRACE_LAYERS):
+                    piece = VMobject(stroke_color=YELLOW, stroke_width=w(width),
+                                     stroke_opacity=opacity)
+                    updater = self._reveal_updater(template, a / n, b / n,
+                                                   tracker)
+                    piece.add_updater(updater)
+                    updater(piece)
+                    trace.add(piece)
+                continue
+            settled = VMobject(stroke_color=YELLOW,
+                               stroke_width=w(TRACE_LAYERS[0][0]),
+                               stroke_opacity=1.0 - 0.65 * fade)
+            updater = self._reveal_updater(template, a / n, b / n, tracker)
+            settled.add_updater(updater)
+            updater(settled)
+            trace.add(settled)
+            for width, opacity in TRACE_LAYERS:
                 piece = VMobject(stroke_color=YELLOW, stroke_width=w(width),
                                  stroke_opacity=opacity)
-                updater = self._reveal_updater(template, a / n, b / n, tracker)
+                updater = self._head_updater(template, a / n, b / n, tracker,
+                                             head_window)
                 piece.add_updater(updater)
                 updater(piece)
                 trace.add(piece)

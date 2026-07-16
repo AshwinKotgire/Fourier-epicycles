@@ -19,10 +19,12 @@ fill: 0.8            # drawing height as a fraction of frame height
 hold: 0              # >0: hold after the draw before the machinery fades out
 end_hold: 0          # >0: hold on the finished drawing after the fade
                      # (both 0 = video is exactly `duration` seconds)
+trace_fade: 0        # 0 = trace stays bright; >0 dims the settled path so a
+                     # glowing comet head follows the pen (try 0.6)
 ghost: true          # faint preview of the final shape from t=0
 label: true          # "N rotating vectors" corner label
 
-view: both           # full | zoom | both
+view: both           # full | zoom | both | pip (zoom inset into the full view)
 zoom_factor: 8       # zoom view magnification
 cam_lag: 0           # zoom camera: 0 = locked on the pen tip; >0 = lazy follow (seconds)
 fps: 60
