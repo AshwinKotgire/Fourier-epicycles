@@ -1,0 +1,5 @@
+output/
+media/
+__pycache__/
+*.pyc
+*.npz
