@@ -11,7 +11,9 @@ rendered from one deterministic timeline so the two stay frame-synced.
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -40,9 +42,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fill", type=float, help="height as fraction of frame")
     p.add_argument("--hold", type=float)
     p.add_argument("--end-hold", type=float, dest="end_hold")
+    p.add_argument("--trace-fade", type=float, dest="trace_fade",
+                   help="0 = trace stays bright; >0 dims the settled path "
+                        "so a glowing head follows the pen")
     p.add_argument("--no-ghost", action="store_true")
     p.add_argument("--no-label", action="store_true")
-    p.add_argument("--view", choices=["full", "zoom", "both"])
+    p.add_argument("--view", choices=["full", "zoom", "both", "pip"],
+                   help="pip = zoom view inset into a corner of the full view")
     p.add_argument("--zoom-factor", type=float, dest="zoom_factor")
     p.add_argument("--cam-lag", type=float, dest="cam_lag")
     p.add_argument("--fps", type=int)
@@ -62,8 +68,8 @@ def build_settings(args: argparse.Namespace) -> Settings:
         s.apply_yaml(args.config)
     scalar_flags = ["duration", "detail", "vectors", "samples", "mode", "extract",
                     "min_area", "canny_low", "canny_high", "smooth", "fill",
-                    "hold", "end_hold", "view", "zoom_factor", "cam_lag",
-                    "fps", "output"]
+                    "hold", "end_hold", "trace_fade", "view", "zoom_factor",
+                    "cam_lag", "fps", "output"]
     for name in scalar_flags:
         value = getattr(args, name)
         if value is not None:
@@ -105,6 +111,47 @@ def render_view(view: str, coeffs, freqs, recon, jump_mask, s: Settings,
     return final
 
 
+def composite_pip(full: Path, zoom: Path, out: Path) -> None:
+    """Overlay the zoom view (at 30% width, thin border) onto the full view."""
+    env_ffmpeg = Path(sys.executable).parent / "ffmpeg"
+    ffmpeg = str(env_ffmpeg) if env_ffmpeg.exists() else "ffmpeg"
+    filt = ("[1:v]scale=trunc(iw*0.3/2)*2:-2,"
+            "pad=iw+6:ih+6:3:3:color=#3a3a3a[inset];"
+            "[0:v][inset]overlay=32:main_h-overlay_h-32")
+    subprocess.run(
+        [ffmpeg, "-y", "-v", "error", "-i", str(full), "-i", str(zoom),
+         "-filter_complex", filt, "-c:v", "libx264", "-preset", "medium",
+         "-crf", "18", "-pix_fmt", "yuv420p", str(out)],
+        check=True)
+
+
+def write_timeline(jump_mask, duration: float, path: Path) -> Path:
+    """Per-contour draw times, so commentary can be scripted to the render."""
+    def ts(sec: float) -> str:
+        return f"{int(sec // 60)}:{sec % 60:04.1f}"
+
+    n = len(jump_mask)
+    segments = []
+    contour = 0
+    start = 0
+    for i in range(1, n + 1):
+        if i < n and jump_mask[i] == jump_mask[start]:
+            continue
+        t0, t1 = start / n * duration, i / n * duration
+        if jump_mask[start]:
+            segments.append({"type": "jump", "start": round(t0, 2),
+                             "end": round(t1, 2)})
+        else:
+            contour += 1
+            segments.append({"type": "contour", "index": contour,
+                             "start": round(t0, 2), "end": round(t1, 2),
+                             "start_ts": ts(t0), "end_ts": ts(t1)})
+        start = i
+    path.write_text(json.dumps(
+        {"duration": duration, "segments": segments}, indent=2))
+    return path
+
+
 def main() -> None:
     args = parse_args()
     s = build_settings(args)
@@ -129,13 +176,26 @@ def main() -> None:
     inspect_png = write_inspect(data, recon, len(coeffs), outdir / "inspect.png")
     confirm_or_abort(inspect_png, s.yes)
 
-    views = ["full", "zoom"] if s.view == "both" else [s.view]
+    timeline = write_timeline(data.jump_mask, s.duration,
+                              outdir / "timeline.json")
+    print(f"Draw timeline: {timeline}")
+
+    views = ["full", "zoom"] if s.view in ("both", "pip") else [s.view]
+    rendered = {}
     for view in views:
         t0 = time.perf_counter()
         print(f"Rendering {view} view...")
         out = render_view(view, coeffs, freqs, recon, data.jump_mask, s,
                           outdir, name)
+        rendered[view] = out
         print(f"  -> {out}  ({time.perf_counter() - t0:.1f}s)")
+
+    if s.view == "pip":
+        t0 = time.perf_counter()
+        print("Compositing picture-in-picture...")
+        pip_out = outdir / f"{name}_pip.mp4"
+        composite_pip(rendered["full"], rendered["zoom"], pip_out)
+        print(f"  -> {pip_out}  ({time.perf_counter() - t0:.1f}s)")
 
 
 if __name__ == "__main__":

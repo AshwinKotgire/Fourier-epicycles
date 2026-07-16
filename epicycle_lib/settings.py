@@ -24,9 +24,10 @@ class Settings:
     fill: float = 0.8             # drawing height as fraction of frame height
     hold: float = 0.0             # seconds to hold after the draw completes
     end_hold: float = 0.0         # seconds to hold after circles fade out
+    trace_fade: float = 0.0       # 0 = trace stays bright; 1 = settled path dims hard
     ghost: bool = True            # faint preview of the final shape from t=0
     label: bool = True            # "N rotating vectors" corner label
-    view: str = "both"            # full | zoom | both
+    view: str = "both"            # full | zoom | both | pip (zoom inset in full)
     zoom_factor: float = 8.0
     cam_lag: float = 0.0          # zoom camera: 0 = locked on pen tip; >0 = lazy follow (s)
     fps: int = 60
@@ -64,9 +65,11 @@ class Settings:
             raise SystemExit("--mode must be full or outline")
         if self.extract not in ("auto", "otsu", "alpha", "canny"):
             raise SystemExit("--extract must be auto, otsu, alpha or canny")
-        if self.view not in ("full", "zoom", "both"):
-            raise SystemExit("--view must be full, zoom or both")
+        if self.view not in ("full", "zoom", "both", "pip"):
+            raise SystemExit("--view must be full, zoom, both or pip")
         if not 0.0 <= self.smooth <= 1.0:
             raise SystemExit("--smooth must be in 0..1")
+        if not 0.0 <= self.trace_fade <= 1.0:
+            raise SystemExit("--trace-fade must be in 0..1")
         if not 0.0 < self.fill <= 1.0:
             raise SystemExit("--fill must be in (0, 1]")
