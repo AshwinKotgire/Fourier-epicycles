@@ -8,6 +8,14 @@ import yaml
 
 DETAIL_VECTORS = {"low": 50, "medium": 150, "high": 400}
 
+# Trace-color presets; --trace-color overrides the theme
+THEMES = {
+    "classic": "#FFFF00",     # 3b1b yellow
+    "straw-hat": "#FFC94D",   # Luffy gold
+    "zoro": "#7ED957",        # green
+    "ace": "#FF7043",         # fire orange
+}
+
 
 @dataclass
 class Settings:
@@ -24,14 +32,23 @@ class Settings:
     fill: float = 0.8             # drawing height as fraction of frame height
     hold: float = 0.0             # seconds to hold after the draw completes
     end_hold: float = 0.0         # seconds to hold after circles fade out
+    end_card: float = 0.0         # >0: scale the finished drawing up and hold (s)
+    start_t: float = 0.0          # render only the slice [start_t, end_t] of the
+    end_t: float = 1.0            # timeline (0..1); great for tuning long draws
     trace_fade: float = 0.0       # 0 = trace stays bright; 1 = settled path dims hard
+    theme: str = "classic"        # trace-color preset: classic|straw-hat|zoro|ace
+    trace_color: str | None = None  # explicit hex trace color, overrides theme
     ghost: bool = True            # faint preview of the final shape from t=0
+    ghost_mode: str = "static"    # static | fadein (grows with t) | late (last third)
+    vignette: float = 0.0         # 0 = flat background; 1 = strong radial gradient
     label: bool = True            # "N rotating vectors" corner label
     view: str = "both"            # full | zoom | both | pip (zoom inset in full)
     zoom_factor: float = 8.0
     cam_lag: float = 0.0          # zoom camera: 0 = locked on pen tip; >0 = lazy follow (s)
     fps: int = 60
     preview: bool = False         # 854x480 @ 15fps fast iteration
+    parallel: bool = False        # render full + zoom views as parallel processes
+    pip_inset_label: bool = False  # keep the corner label inside the pip inset
     yes: bool = False             # skip the inspection confirmation prompt
     via_svg: bool = False         # route the bitmap through vtracer -> SVG -> samples
     double_lines: bool = False    # draw both edges of stroked lines (default: one)
@@ -71,5 +88,17 @@ class Settings:
             raise SystemExit("--smooth must be in 0..1")
         if not 0.0 <= self.trace_fade <= 1.0:
             raise SystemExit("--trace-fade must be in 0..1")
+        if self.theme not in THEMES:
+            raise SystemExit(f"--theme must be one of {list(THEMES)}")
+        if self.ghost_mode not in ("static", "fadein", "late"):
+            raise SystemExit("--ghost-mode must be static, fadein or late")
+        if not 0.0 <= self.vignette <= 1.0:
+            raise SystemExit("--vignette must be in 0..1")
+        if not 0.0 <= self.start_t < self.end_t <= 1.0:
+            raise SystemExit("need 0 <= start-t < end-t <= 1")
+
+    @property
+    def trace_hex(self) -> str:
+        return self.trace_color or THEMES[self.theme]
         if not 0.0 < self.fill <= 1.0:
             raise SystemExit("--fill must be in (0, 1]")

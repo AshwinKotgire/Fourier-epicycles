@@ -1,0 +1,22 @@
+# Batch config for epicycles_batch.py - renders several images in order,
+# optionally stitching them into one video.
+#   python epicycles_batch.py configs/batch_example.yaml --yes
+
+defaults:              # any settings key; each job can override
+  duration: 60
+  detail: high
+  view: pip
+  trace_fade: 0.6
+  parallel: true
+
+jobs:
+  - image: assets/test_star.png
+    duration: 12
+    theme: straw-hat
+  - image: assets/test_star.png
+    output: output/test_star_take2   # jobs on the same image need separate dirs
+    duration: 12
+    theme: zoro
+
+concat: true                         # stitch job videos (pip > full > zoom)
+concat_output: output/episode1.mp4   # requires matching resolution/fps
