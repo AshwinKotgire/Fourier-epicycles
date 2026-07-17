@@ -220,15 +220,18 @@ class EpicycleScene(MovingCameraScene):
 
         # -- vector chain: white arrows (shaft + filled head), widths tapering
         #    with coefficient magnitude
-        widths = 0.5 + 2.0 * np.sqrt(mags / max(mags.max(), 1e-12))
-        head_max = HEAD_LENGTH / cam_scale
+        widths = (0.5 + 2.0 * np.sqrt(mags / max(mags.max(), 1e-12))) * s.arrow_width
+        head_scale = s.arrow_head
+        head_max = HEAD_LENGTH * head_scale / cam_scale
+        arrow_opacity = min(1.0, 0.95 * s.arrow_opacity)
         shafts = VGroup(*[
             Line(ORIGIN, RIGHT, stroke_color=VECTOR_COLOR,
-                 stroke_width=w(widths[k]), stroke_opacity=0.95)
+                 stroke_width=w(widths[k]), stroke_opacity=arrow_opacity)
             for k in range(n_vec)
         ])
         heads = VGroup(*[
-            VMobject(stroke_width=0, fill_color=VECTOR_COLOR, fill_opacity=0.95)
+            VMobject(stroke_width=0, fill_color=VECTOR_COLOR,
+                     fill_opacity=arrow_opacity)
             for _ in range(n_vec)
         ])
         vectors = VGroup(shafts, heads)
@@ -243,7 +246,7 @@ class EpicycleScene(MovingCameraScene):
                     heads[k].set_points(np.zeros((0, 3)))
                     continue
                 direction = (b - a) / length
-                head = min(head_max, HEAD_LENGTH_RATIO * length)
+                head = min(head_max, HEAD_LENGTH_RATIO * head_scale * length)
                 base = b - direction * head
                 shafts[k].put_start_and_end_on(c2p(a), c2p(base))
                 side = direction * 1j * head * HEAD_WIDTH_RATIO

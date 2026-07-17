@@ -44,6 +44,9 @@ class Settings:
     ghost: bool = True            # faint preview of the final shape from t=0
     ghost_mode: str = "static"    # static | fadein (grows with t) | late (last third)
     vignette: float = 0.0         # 0 = flat background; 1 = strong radial gradient
+    arrow_width: float = 0.5      # vector shaft thickness scale (1.0 = original)
+    arrow_head: float = 0.5       # vector arrowhead size scale (1.0 = original)
+    arrow_opacity: float = 0.5    # vector arrow opacity scale (1.0 = original)
     label: bool = True            # "N rotating vectors" corner label
     view: str = "both"            # full | zoom | both | pip (zoom inset in full)
     zoom_factor: float = 8.0
@@ -98,6 +101,9 @@ class Settings:
             raise SystemExit("--ghost-mode must be static, fadein or late")
         if not 0.0 <= self.vignette <= 1.0:
             raise SystemExit("--vignette must be in 0..1")
+        for knob in ("arrow_width", "arrow_head", "arrow_opacity"):
+            if not 0.0 < getattr(self, knob) <= 2.0:
+                raise SystemExit(f"--{knob.replace('_', '-')} must be in (0, 2]")
         if not 0.0 <= self.start_t < self.end_t <= 1.0:
             raise SystemExit("need 0 <= start-t < end-t <= 1")
         if not 0.0 < self.fill <= 1.0:

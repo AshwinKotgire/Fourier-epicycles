@@ -71,6 +71,12 @@ def parse_args() -> argparse.Namespace:
                         "progress; late = appears in the last third")
     p.add_argument("--vignette", type=float,
                    help="0..1 radial background gradient strength")
+    p.add_argument("--arrow-width", type=float, dest="arrow_width",
+                   help="vector shaft thickness scale (default 0.5, 1.0 = original)")
+    p.add_argument("--arrow-head", type=float, dest="arrow_head",
+                   help="vector arrowhead size scale (default 0.5, 1.0 = original)")
+    p.add_argument("--arrow-opacity", type=float, dest="arrow_opacity",
+                   help="vector arrow opacity scale (default 0.5, 1.0 = original)")
     p.add_argument("--trace-fade", type=float, dest="trace_fade",
                    help="0 = trace stays bright; >0 dims the settled path "
                         "so a glowing head follows the pen")
@@ -105,6 +111,7 @@ def build_settings(args: argparse.Namespace) -> Settings:
                     "method", "min_area", "canny_low", "canny_high", "smooth", "fill",
                     "hold", "end_hold", "end_card", "start_t", "end_t",
                     "theme", "trace_color", "ghost_mode", "vignette",
+                    "arrow_width", "arrow_head", "arrow_opacity",
                     "trace_fade", "view", "zoom_factor", "cam_lag",
                     "fps", "output"]
     for name in scalar_flags:

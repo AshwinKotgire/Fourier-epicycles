@@ -32,6 +32,9 @@ theme: classic       # trace color preset: classic | straw-hat | zoro | ace
 trace_fade: 0        # 0 = trace stays bright; >0 dims the settled path so a
                      # glowing comet head follows the pen (try 0.6)
 vignette: 0          # 0..1 radial background gradient (brighter center)
+arrow_width: 0.5     # vector shaft thickness scale (1.0 = original chunky look)
+arrow_head: 0.5      # vector arrowhead size scale (1.0 = original)
+arrow_opacity: 0.5   # vector arrow opacity scale (1.0 = original)
 ghost: true          # faint preview of the final shape from t=0
 ghost_mode: static   # static | fadein (grows with progress) | late (last third)
 label: true          # "N rotating vectors" corner label
