@@ -25,6 +25,9 @@ class Settings:
     samples: int | None = None    # path sample count; None = max(4096, 10 * vectors)
     mode: str = "full"            # full = all contours | outline = largest only
     extract: str = "auto"         # auto | otsu | alpha | canny
+    method: str = "contour"       # contour = findContours loops | vtracer = via
+                                  # SVG splines | points = unordered point cloud,
+                                  # ordered by a greedy nearest-neighbour tour
     min_area: float = 0.001       # drop contours below this fraction of image area
     canny_low: int = 60
     canny_high: int = 160
@@ -50,7 +53,6 @@ class Settings:
     parallel: bool = False        # render full + zoom views as parallel processes
     pip_inset_label: bool = False  # keep the corner label inside the pip inset
     yes: bool = False             # skip the inspection confirmation prompt
-    via_svg: bool = False         # route the bitmap through vtracer -> SVG -> samples
     double_lines: bool = False    # draw both edges of stroked lines (default: one)
     output: str | None = None     # output directory; default output/<image-stem>/
 
@@ -82,6 +84,8 @@ class Settings:
             raise SystemExit("--mode must be full or outline")
         if self.extract not in ("auto", "otsu", "alpha", "canny"):
             raise SystemExit("--extract must be auto, otsu, alpha or canny")
+        if self.method not in ("contour", "vtracer", "points"):
+            raise SystemExit("--method must be contour, vtracer or points")
         if self.view not in ("full", "zoom", "both", "pip"):
             raise SystemExit("--view must be full, zoom, both or pip")
         if not 0.0 <= self.smooth <= 1.0:
@@ -96,9 +100,9 @@ class Settings:
             raise SystemExit("--vignette must be in 0..1")
         if not 0.0 <= self.start_t < self.end_t <= 1.0:
             raise SystemExit("need 0 <= start-t < end-t <= 1")
+        if not 0.0 < self.fill <= 1.0:
+            raise SystemExit("--fill must be in (0, 1]")
 
     @property
     def trace_hex(self) -> str:
         return self.trace_color or THEMES[self.theme]
-        if not 0.0 < self.fill <= 1.0:
-            raise SystemExit("--fill must be in (0, 1]")

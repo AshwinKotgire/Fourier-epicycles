@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--samples", type=int, help="path sample count (default auto)")
     p.add_argument("--mode", choices=["full", "outline"])
     p.add_argument("--extract", choices=["auto", "otsu", "alpha", "canny"])
+    p.add_argument("--method", choices=["contour", "vtracer", "points"],
+                   help="path tracing: contour = ordered findContours loops "
+                        "(default); vtracer = bitmap -> SVG splines; points = "
+                        "unordered point cloud, ordered by a greedy "
+                        "nearest-neighbour tour at generation time")
     p.add_argument("--min-area", type=float, dest="min_area")
     p.add_argument("--canny-low", type=int, dest="canny_low")
     p.add_argument("--canny-high", type=int, dest="canny_high")
@@ -85,7 +90,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--preview", action="store_true", help="854x480 @ 15fps")
     p.add_argument("--yes", action="store_true", help="skip the inspect prompt")
     p.add_argument("--via-svg", action="store_true", dest="via_svg",
-                   help="route the bitmap through vtracer (quality A/B test)")
+                   help="deprecated alias for --method vtracer")
     p.add_argument("--double-lines", action="store_true", dest="double_lines",
                    help="draw both edges of stroked lines instead of one")
     p.add_argument("-o", "--output", help="output directory")
@@ -97,7 +102,7 @@ def build_settings(args: argparse.Namespace) -> Settings:
     if args.config:
         s.apply_yaml(args.config)
     scalar_flags = ["duration", "detail", "vectors", "samples", "mode", "extract",
-                    "min_area", "canny_low", "canny_high", "smooth", "fill",
+                    "method", "min_area", "canny_low", "canny_high", "smooth", "fill",
                     "hold", "end_hold", "end_card", "start_t", "end_t",
                     "theme", "trace_color", "ghost_mode", "vignette",
                     "trace_fade", "view", "zoom_factor", "cam_lag",
@@ -110,7 +115,9 @@ def build_settings(args: argparse.Namespace) -> Settings:
         s.ghost = False
     if args.no_label:
         s.label = False
-    for flag in ("preview", "yes", "via_svg", "double_lines", "parallel",
+    if args.via_svg:
+        s.method = "vtracer"
+    for flag in ("preview", "yes", "double_lines", "parallel",
                  "pip_inset_label"):
         if getattr(args, flag):
             setattr(s, flag, True)

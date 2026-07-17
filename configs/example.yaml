@@ -12,7 +12,10 @@ extract: auto        # auto | otsu | alpha | canny
 # canny_low: 60      # only used with extract: canny
 # canny_high: 160
 smooth: 0.2          # 0 = raw pixel contours .. 1 = heavy simplification
-# via_svg: false     # route the bitmap through vtracer (quality A/B test)
+method: contour      # contour = ordered findContours loops (default)
+                     # vtracer = bitmap -> SVG splines (quality A/B test)
+                     # points  = unordered point cloud, ordered by a greedy
+                     #           nearest-neighbour tour at generation time
 # double_lines: false  # draw both edges of stroked lines (default: one line per stroke)
 
 fill: 0.8            # drawing height as a fraction of frame height
