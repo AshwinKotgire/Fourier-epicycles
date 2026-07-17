@@ -12,6 +12,9 @@ extract: auto        # auto | otsu | alpha | canny
 # canny_low: 60      # only used with extract: canny
 # canny_high: 160
 smooth: 0.2          # 0 = raw pixel contours .. 1 = heavy simplification
+# dedup-ratio: 0.6   # stroke-dedup area-ratio gate; inner edges of thick
+# dedup-dist: 0.02   # lines are dropped only if they also hug the outer edge
+                     # within this fraction of image size (protects detail)
 method: contour      # contour = ordered findContours loops (default)
                      # vtracer = bitmap -> SVG splines (quality A/B test)
                      # points  = unordered point cloud, ordered by a greedy
@@ -38,6 +41,12 @@ arrow_opacity: 0.5   # vector arrow opacity scale (1.0 = original);
                      # arrows fade in decreasing order of size down the chain
 circle_opacity: 0.5  # circle brightness scale (1.0 = original);
                      # larger circles stay brighter than smaller ones
+circle_width: 1.0    # circle stroke width scale; also tapers down the chain
+trace_glow: 1.0      # trace glow halo intensity, 0..2 (0 = no halo)
+jump_opacity: 1.0    # jump-line visibility, 0..2 (0 = hidden)
+ghost_opacity: 0.06  # ghost preview stroke opacity
+tip_glow: 0.6        # glowing pen-tip highlight intensity (0 = off)
+bloom: 0.35          # post-render neon bloom strength (0 = off)
 ghost: true          # faint preview of the final shape from t=0
 ghost_mode: static   # static | fadein (grows with progress) | late (last third)
 label: true          # "N rotating vectors" corner label
@@ -45,6 +54,8 @@ label: true          # "N rotating vectors" corner label
 view: both           # full | zoom | both | pip (zoom inset into the full view)
 # pip_inset_label: false  # keep the corner label inside the pip inset
 zoom_factor: 8       # zoom view magnification
+# zoom-start: 4      # ease magnification from this factor to zoom_factor
+                     # over the draw (default: fixed at zoom_factor)
 cam_lag: 0           # zoom camera: 0 = locked on the pen tip; >0 = lazy follow (seconds)
 fps: 60
 # parallel: true     # render full + zoom as two parallel processes

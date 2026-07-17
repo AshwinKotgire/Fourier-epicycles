@@ -61,6 +61,9 @@ method: contour      # contour = ordered findContours loops (default)
 # canny-low: 60      # only used with extract: canny
 # canny-high: 160
 smooth: 0.2          # 0 = raw pixel contours .. 1 = heavy simplification
+# dedup-ratio: 0.6   # stroke-dedup area-ratio gate; inner edges of thick
+# dedup-dist: 0.02   # lines are dropped only if they also hug the outer edge
+                     # within this fraction of image size (protects detail)
 
 fill: 0.8            # drawing height as a fraction of frame height
 hold: 0              # >0: hold after the draw before the machinery fades
@@ -79,6 +82,12 @@ arrow_opacity: 0.5   # vector arrow opacity scale (1.0 = original);
                      # arrows fade in decreasing order of size down the chain
 circle_opacity: 0.5  # circle brightness scale (1.0 = original);
                      # larger circles stay brighter than smaller ones
+circle_width: 1.0    # circle stroke width scale; also tapers down the chain
+trace_glow: 1.0      # trace glow halo intensity, 0..2 (0 = no halo)
+jump_opacity: 1.0    # jump-line visibility, 0..2 (0 = hidden)
+ghost_opacity: 0.06  # ghost preview stroke opacity
+tip_glow: 0.6        # glowing pen-tip highlight intensity (0 = off)
+bloom: 0.35          # post-render neon bloom strength (0 = off)
 ghost: true          # faint preview of the final shape from t=0
 ghost_mode: static   # static | fadein | late
 label: true          # "N rotating vectors" corner label
@@ -86,6 +95,8 @@ label: true          # "N rotating vectors" corner label
 view: pip            # full | zoom | both | pip (zoom inset in the full view)
 # pip_inset_label: false
 zoom_factor: 8
+# zoom-start: 4      # ease magnification from this factor to zoom_factor
+                     # over the draw (default: fixed at zoom_factor)
 cam_lag: 0           # zoom camera: 0 = locked on pen tip; >0 = lazy follow (s)
 fps: 60              # production is 1920x1080 at this fps (--preview: 480p15)
 parallel: true       # render full + zoom as two parallel processes
@@ -170,6 +181,26 @@ def parse_args() -> argparse.Namespace:
                    help="vector arrow opacity scale (default 0.5, 1.0 = original)")
     p.add_argument("--circle-opacity", type=float, dest="circle_opacity",
                    help="circle brightness scale (default 0.5, 1.0 = original)")
+    p.add_argument("--circle-width", type=float, dest="circle_width",
+                   help="circle stroke width scale; also tapers down the chain")
+    p.add_argument("--trace-glow", type=float, dest="trace_glow",
+                   help="trace glow halo intensity, 0..2 (0 = no halo)")
+    p.add_argument("--jump-opacity", type=float, dest="jump_opacity",
+                   help="jump-line visibility, 0..2 (0 = hidden)")
+    p.add_argument("--ghost-opacity", type=float, dest="ghost_opacity",
+                   help="ghost preview stroke opacity (default 0.06)")
+    p.add_argument("--tip-glow", type=float, dest="tip_glow",
+                   help="glowing pen-tip highlight intensity, 0..1 (0 = off)")
+    p.add_argument("--bloom", type=float,
+                   help="post-render neon bloom strength, 0..1 (0 = off)")
+    p.add_argument("--zoom-start", type=float, dest="zoom_start",
+                   help="ease zoom magnification from this factor to "
+                        "--zoom-factor over the draw (default: fixed)")
+    p.add_argument("--dedup-ratio", type=float, dest="dedup_ratio",
+                   help="stroke-dedup area-ratio gate (default 0.6)")
+    p.add_argument("--dedup-dist", type=float, dest="dedup_dist",
+                   help="stroke-dedup max edge gap as a fraction of image "
+                        "size (default 0.02); smaller keeps more detail")
     p.add_argument("--trace-fade", type=float, dest="trace_fade",
                    help="0 = trace stays bright; >0 dims the settled path "
                         "so a glowing head follows the pen")
@@ -206,7 +237,9 @@ def build_settings(args: argparse.Namespace) -> tuple[Settings, str | None]:
                     "hold", "end_hold", "end_card", "start_t", "end_t",
                     "theme", "trace_color", "ghost_mode", "vignette",
                     "arrow_width", "arrow_head", "arrow_opacity",
-                    "circle_opacity",
+                    "circle_opacity", "circle_width", "trace_glow",
+                    "jump_opacity", "ghost_opacity", "tip_glow", "bloom",
+                    "zoom_start", "dedup_ratio", "dedup_dist",
                     "trace_fade", "view", "zoom_factor", "cam_lag",
                     "fps", "output"]
     for name in scalar_flags:
@@ -251,6 +284,22 @@ def render_view(view: str, coeffs, freqs, recon, jump_mask, s: Settings,
     # is a real video, so drop the scratch tree to avoid confusion
     shutil.rmtree(outdir / f"media_{view}", ignore_errors=True)
     return final
+
+
+def bloom_pass(video: Path, strength: float) -> None:
+    """Re-encode with a neon bloom: bright pass -> blur -> screen blend."""
+    tmp = video.with_name(video.stem + ".bloom.mp4")
+    lut = "'max(val-140,0)*2.5'"
+    filt = (f"[0:v]format=gbrp,split[base][bright];"
+            f"[bright]lutrgb=r={lut}:g={lut}:b={lut},gblur=sigma=14[glow];"
+            f"[base][glow]blend=all_mode=screen:all_opacity={strength:.3f},"
+            f"format=yuv420p")
+    subprocess.run(
+        [ffmpeg_bin(), "-y", "-v", "error", "-i", str(video),
+         "-filter_complex", filt, "-c:v", "libx264", "-preset", "medium",
+         "-crf", "18", str(tmp)],
+        check=True)
+    tmp.replace(video)
 
 
 def composite_pip(full: Path, zoom: Path, out: Path) -> None:
@@ -344,6 +393,13 @@ def run(image_path: Path, s: Settings) -> dict[str, Path]:
                               view_settings[view], outdir, name)
             rendered[view] = out
             print(f"  -> {out}  ({time.perf_counter() - t0:.1f}s)")
+
+    if s.bloom > 0:
+        t0 = time.perf_counter()
+        print(f"Applying bloom ({s.bloom:.2f})...")
+        for view in views:
+            bloom_pass(rendered[view], s.bloom)
+        print(f"  ({time.perf_counter() - t0:.1f}s)")
 
     if s.view == "pip":
         t0 = time.perf_counter()

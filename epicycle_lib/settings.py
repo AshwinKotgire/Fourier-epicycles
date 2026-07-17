@@ -32,6 +32,11 @@ class Settings:
     canny_low: int = 60
     canny_high: int = 160
     smooth: float = 0.2           # 0 = raw pixel contours .. 1 = heavy simplification
+    dedup_ratio: float = 0.6      # child/parent area ratio above which an inner
+                                  # contour is a stroke's second edge candidate
+    dedup_dist: float = 0.02      # ...but only dropped if it also hugs the outer
+                                  # edge closer than this fraction of image size
+                                  # everywhere (protects genuine detail)
     fill: float = 0.8             # drawing height as fraction of frame height
     hold: float = 0.0             # seconds to hold after the draw completes
     end_hold: float = 0.0         # seconds to hold after circles fade out
@@ -50,6 +55,15 @@ class Settings:
                                   # opacity tapers down the chain with magnitude
     circle_opacity: float = 0.5   # circle brightness scale (1.0 = original);
                                   # larger circles stay brighter than smaller
+    circle_width: float = 1.0     # circle stroke width scale; width also tapers
+                                  # down the chain with magnitude
+    trace_glow: float = 1.0       # trace glow halo intensity scale (0 = no halo)
+    jump_opacity: float = 1.0     # jump-line visibility scale (0 = hidden)
+    ghost_opacity: float = 0.06   # ghost preview stroke opacity
+    tip_glow: float = 0.6         # glowing pen-tip highlight intensity (0 = off)
+    bloom: float = 0.35           # post-render neon bloom strength (0 = off)
+    zoom_start: float | None = None  # zoom view eases from this factor to
+                                  # zoom_factor over the draw (None = fixed)
     label: bool = True            # "N rotating vectors" corner label
     view: str = "both"            # full | zoom | both | pip (zoom inset in full)
     zoom_factor: float = 8.0
@@ -109,9 +123,19 @@ class Settings:
         if not 0.0 <= self.vignette <= 1.0:
             raise SystemExit("--vignette must be in 0..1")
         for knob in ("arrow_width", "arrow_head", "arrow_opacity",
-                     "circle_opacity"):
+                     "circle_opacity", "circle_width"):
             if not 0.0 < getattr(self, knob) <= 2.0:
                 raise SystemExit(f"--{knob.replace('_', '-')} must be in (0, 2]")
+        for knob in ("trace_glow", "jump_opacity"):
+            if not 0.0 <= getattr(self, knob) <= 2.0:
+                raise SystemExit(f"--{knob.replace('_', '-')} must be in 0..2")
+        for knob in ("ghost_opacity", "tip_glow", "bloom", "dedup_ratio"):
+            if not 0.0 <= getattr(self, knob) <= 1.0:
+                raise SystemExit(f"--{knob.replace('_', '-')} must be in 0..1")
+        if not 0.0 <= self.dedup_dist <= 0.2:
+            raise SystemExit("--dedup-dist must be in 0..0.2")
+        if self.zoom_start is not None and self.zoom_start < 1.0:
+            raise SystemExit("--zoom-start must be >= 1")
         if not 0.0 <= self.start_t < self.end_t <= 1.0:
             raise SystemExit("need 0 <= start-t < end-t <= 1")
         if not 0.0 < self.fill <= 1.0:
