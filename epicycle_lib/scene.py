@@ -204,9 +204,10 @@ class EpicycleScene(MovingCameraScene):
         # -- circles: visibility decided in camera space (pixels on screen);
         #    larger circles slightly brighter, like the 3b1b original
         mags = np.abs(coeffs)
+        mag_ratio = np.sqrt(mags / max(mags.max(), 1e-12))  # 1 -> 0 down the chain
         px_per_unit = config.pixel_width / (config.frame_width / cam_scale)
         visibility = np.clip((mags * px_per_unit - 2.0) / 2.0, 0.0, 1.0)
-        brightness = 0.25 + 0.4 * np.sqrt(mags / max(mags.max(), 1e-12))
+        brightness = np.minimum(1.0, (0.25 + 0.4 * mag_ratio) * s.circle_opacity)
         circles = VGroup()
         circle_indices = []
         for k in range(n_vec):
@@ -220,19 +221,22 @@ class EpicycleScene(MovingCameraScene):
 
         # -- vector chain: white arrows (shaft + filled head), widths tapering
         #    with coefficient magnitude
-        widths = (0.5 + 2.0 * np.sqrt(mags / max(mags.max(), 1e-12))) * s.arrow_width
+        widths = (0.5 + 2.0 * mag_ratio) * s.arrow_width
         head_scale = s.arrow_head
         head_max = HEAD_LENGTH * head_scale / cam_scale
-        arrow_opacity = min(1.0, 0.95 * s.arrow_opacity)
+        # opacity tapers down the chain like the widths do, so the tiny fast
+        # arrows near the pen fade instead of forming a bright cluster
+        arrow_opacity = np.minimum(
+            1.0, 0.95 * s.arrow_opacity * (0.45 + 0.55 * mag_ratio))
         shafts = VGroup(*[
             Line(ORIGIN, RIGHT, stroke_color=VECTOR_COLOR,
-                 stroke_width=w(widths[k]), stroke_opacity=arrow_opacity)
+                 stroke_width=w(widths[k]), stroke_opacity=arrow_opacity[k])
             for k in range(n_vec)
         ])
         heads = VGroup(*[
             VMobject(stroke_width=0, fill_color=VECTOR_COLOR,
-                     fill_opacity=arrow_opacity)
-            for _ in range(n_vec)
+                     fill_opacity=arrow_opacity[k])
+            for k in range(n_vec)
         ])
         vectors = VGroup(shafts, heads)
 
