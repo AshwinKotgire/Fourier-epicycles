@@ -83,14 +83,27 @@ def _contours_from_binary(binary: np.ndarray, s: Settings) -> list[np.ndarray]:
     if not s.double_lines and hierarchy is not None:
         # Stroked linework yields two contours per stroke: the outside and the
         # inside edge, nearly equal in enclosed area. Drop the inner edge so a
-        # stroke is drawn as one line. Genuine holes (small relative to their
-        # parent, like a skull's eye sockets) survive the ratio test.
+        # stroke is drawn as one line. Two gates protect genuine detail:
+        # the area-ratio test (holes small relative to their parent survive)
+        # AND a distance test - a real stroke's two edges run parallel a few
+        # pixels apart *everywhere*, so an inner contour is only dropped when
+        # 90% of its points lie within dedup_dist of the outer edge.
+        max_gap = s.dedup_dist * max(binary.shape)
         for i, row in enumerate(hierarchy[0]):
             parent = row[3]
             if parent == -1:
                 continue
             parent_area = cv2.contourArea(found[parent])
-            if parent_area > 0 and cv2.contourArea(found[i]) / parent_area > 0.6:
+            if parent_area <= 0 or \
+                    cv2.contourArea(found[i]) / parent_area <= s.dedup_ratio:
+                continue
+            child = found[i][:, 0, :].astype(np.float64)
+            outer = found[parent][:, 0, :].astype(np.float64)
+            child = child[::max(1, len(child) // 200)]
+            outer = outer[::max(1, len(outer) // 400)]
+            gaps = np.sqrt(((child[:, None, :] - outer[None, :, :]) ** 2)
+                           .sum(-1)).min(axis=1)
+            if np.quantile(gaps, 0.9) <= max_gap:
                 keep[i] = False
     min_area = s.min_area * binary.shape[0] * binary.shape[1]
     candidates = [c for i, c in enumerate(found) if keep[i] and len(c) >= 8]
@@ -323,7 +336,7 @@ def extract_path(image_path: str | Path, s: Settings,
     if cache_dir is not None:
         params = (hashlib.sha1(raw).hexdigest(), s.extract, s.mode, s.min_area,
                   s.canny_low, s.canny_high, s.smooth, s.fill, s.method,
-                  s.double_lines, n_samples)
+                  s.double_lines, s.dedup_ratio, s.dedup_dist, n_samples)
         key = hashlib.sha1(repr(params).encode()).hexdigest()[:16]
         cache_file = cache_dir / f"cache_{key}.npz"
 

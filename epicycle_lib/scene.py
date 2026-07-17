@@ -7,7 +7,7 @@ renders stay frame-for-frame in sync for picture-in-picture editing.
 from __future__ import annotations
 
 import numpy as np
-from manim import (DR, ORIGIN, RIGHT, TAU, WHITE, Circle, FadeOut,
+from manim import (DR, ORIGIN, RIGHT, TAU, WHITE, Circle, Dot, FadeOut,
                    ImageMobject, Line, MovingCameraScene, Text, ValueTracker,
                    VGroup, VMobject, config, linear)
 
@@ -144,19 +144,20 @@ class EpicycleScene(MovingCameraScene):
         #    ghost_mode: static = always visible; fadein = grows with progress;
         #    late = only appears in the last third (protects the reveal)
         ghost = VGroup()
-        if s.ghost:
+        if s.ghost and s.ghost_opacity > 0:
+            g_op = s.ghost_opacity
             for a, b, jump in runs:
                 if jump:
                     continue
                 vm = VMobject(stroke_color=WHITE, stroke_width=w(1.5),
-                              stroke_opacity=0.08)
+                              stroke_opacity=g_op)
                 vm.set_points_as_corners(path_points(recon_ext[a:b + 1]))
                 ghost.add(vm)
             if s.ghost_mode != "static":
                 def ghost_opacity(t: float) -> float:
                     if s.ghost_mode == "fadein":
-                        return 0.08 * t
-                    return 0.08 * float(np.clip((t - 2 / 3) / 0.1, 0.0, 1.0))
+                        return g_op * t
+                    return g_op * float(np.clip((t - 2 / 3) / 0.1, 0.0, 1.0))
 
                 def update_ghost(g: VGroup) -> None:
                     g.set_stroke(opacity=ghost_opacity(tracker.get_value()))
@@ -171,11 +172,19 @@ class EpicycleScene(MovingCameraScene):
         trace = VGroup()
         fade = float(np.clip(s.trace_fade, 0.0, 1.0))
         head_window = 0.08
+        # core layer at full strength; the halo layers scale with trace_glow,
+        # jump lines with jump_opacity
+        trace_layers = [TRACE_LAYERS[0]] + [
+            (wd, min(1.0, op * s.trace_glow)) for wd, op in TRACE_LAYERS[1:]]
+        jump_layers = [(wd, min(1.0, op * s.jump_opacity))
+                       for wd, op in JUMP_LAYERS]
         for a, b, jump in runs:
+            if jump and s.jump_opacity <= 0:
+                continue
             template = VMobject()
             template.set_points_as_corners(path_points(recon_ext[a:b + 1]))
             if jump or fade <= 0:
-                for width, opacity in (JUMP_LAYERS if jump else TRACE_LAYERS):
+                for width, opacity in (jump_layers if jump else trace_layers):
                     piece = VMobject(stroke_color=trace_hex, stroke_width=w(width),
                                      stroke_opacity=opacity)
                     updater = self._reveal_updater(template, a / n, b / n,
@@ -191,7 +200,7 @@ class EpicycleScene(MovingCameraScene):
             settled.add_updater(updater)
             updater(settled)
             trace.add(settled)
-            for width, opacity in TRACE_LAYERS:
+            for width, opacity in trace_layers:
                 piece = VMobject(stroke_color=trace_hex, stroke_width=w(width),
                                  stroke_opacity=opacity)
                 updater = self._head_updater(template, a / n, b / n, tracker,
@@ -213,10 +222,12 @@ class EpicycleScene(MovingCameraScene):
         for k in range(n_vec):
             if visibility[k] <= 0.01 or mags[k] <= 1e-6:
                 continue
-            circles.add(Circle(radius=mags[k], stroke_color=CIRCLE_COLOR,
-                               stroke_width=w(1.2),
-                               stroke_opacity=brightness[k] * visibility[k],
-                               fill_opacity=0))
+            circles.add(Circle(
+                radius=mags[k], stroke_color=CIRCLE_COLOR,
+                stroke_width=w(1.2 * (0.5 + 0.5 * mag_ratio[k])
+                               * s.circle_width),
+                stroke_opacity=brightness[k] * visibility[k],
+                fill_opacity=0))
             circle_indices.append(k)
 
         # -- vector chain: white arrows (shaft + filled head), widths tapering
@@ -263,21 +274,53 @@ class EpicycleScene(MovingCameraScene):
         update_kinematics(vectors)
         self.add(circles, vectors)
 
+        # -- pen-tip highlight: a bright core with a themed halo, so the eye
+        #    always has a focal point at the pen
+        tip_dot = VGroup()
+        if s.tip_glow > 0:
+            for radius, opacity, color in ((0.20, 0.12, trace_hex),
+                                           (0.10, 0.30, trace_hex),
+                                           (0.03, 1.00, WHITE)):
+                tip_dot.add(Dot(radius=radius / cam_scale, fill_color=color,
+                                fill_opacity=min(1.0, opacity * s.tip_glow),
+                                stroke_width=0))
+
+            def update_tip(m: VGroup) -> None:
+                m.move_to(c2p(tip_z(tracker.get_value())))
+
+            tip_dot.add_updater(update_tip)
+            update_tip(tip_dot)
+            self.add(tip_dot)
+
         # -- zoom camera: locked on the pen tip (cam_lag 0, the default);
-        #    a positive cam_lag gives an exponential-damping lazy follow
+        #    a positive cam_lag gives an exponential-damping lazy follow.
+        #    zoom_start eases the magnification from zoom_start to zoom_factor
+        #    across the draw (strokes render a touch thinner early on)
         if zoomed:
-            frame.set(width=config.frame_width / cam_scale)
+            z_end = s.zoom_factor
+            z_start = s.zoom_start if s.zoom_start else z_end
+
+            def cam_width(t: float) -> float:
+                return config.frame_width / (z_start + (z_end - z_start) * t)
+
+            frame.set(width=cam_width(s.start_t))
             frame.move_to(c2p(tip_z(s.start_t)))
             if s.cam_lag <= 0:
-                frame.add_updater(
-                    lambda f: f.move_to(c2p(tip_z(tracker.get_value()))))
+                def lock(f) -> None:
+                    t = tracker.get_value()
+                    f.set(width=cam_width(t))
+                    f.move_to(c2p(tip_z(t)))
+
+                frame.add_updater(lock)
             else:
                 def follow(f, dt: float) -> None:
                     if dt <= 0:
                         return
+                    t = tracker.get_value()
                     blend = 1.0 - np.exp(-dt / s.cam_lag)
+                    f.set(width=cam_width(t))
                     f.move_to((1 - blend) * f.get_center()
-                              + blend * c2p(tip_z(tracker.get_value())))
+                              + blend * c2p(tip_z(t)))
 
                 frame.add_updater(follow)
             self.add(frame)
@@ -313,7 +356,8 @@ class EpicycleScene(MovingCameraScene):
             if s.hold > 0:
                 self.wait(s.hold)
             vectors.clear_updaters()
-            fading = [g for g in (vectors, circles) if len(g) > 0]
+            tip_dot.clear_updaters()
+            fading = [g for g in (vectors, circles, tip_dot) if len(g) > 0]
             if fading:
                 self.play(*[FadeOut(g) for g in fading], run_time=3)
             if s.end_card > 0:
