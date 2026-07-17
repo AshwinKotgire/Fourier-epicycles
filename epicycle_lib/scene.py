@@ -7,9 +7,13 @@ renders stay frame-for-frame in sync for picture-in-picture editing.
 from __future__ import annotations
 
 import numpy as np
-from manim import (DR, ORIGIN, RIGHT, TAU, WHITE, Circle, Dot, FadeOut,
+from manim import (DR, ORIGIN, RIGHT, TAU, WHITE, Circle, Dot, FadeIn, FadeOut,
                    ImageMobject, Line, MovingCameraScene, Text, ValueTracker,
-                   VGroup, VMobject, config, linear)
+                   VGroup, VMobject, config, linear, rush_from, rush_into,
+                   smooth)
+
+# draw-speed easing presets (rush_into = ease-in, rush_from = ease-out)
+EASE_FUNCS = {"none": linear, "in": rush_into, "out": rush_from, "inout": smooth}
 
 BG_COLOR = "#161616"
 CIRCLE_COLOR = "#58C4DD"   # 3b1b light blue
@@ -32,6 +36,14 @@ def c2p(z: complex) -> np.ndarray:
 
 def path_points(zs: np.ndarray) -> np.ndarray:
     return np.column_stack([zs.real, zs.imag, np.zeros(len(zs))])
+
+
+def _fit_image(img, frac: float = 0.9) -> None:
+    """Scale an ImageMobject to fill `frac` of the frame, centered, aspect kept."""
+    img.height = config.frame_height * frac
+    if img.width > config.frame_width * frac:
+        img.width = config.frame_width * frac
+    img.move_to(ORIGIN)
 
 
 def mask_runs(mask: np.ndarray) -> list[tuple[int, int, bool]]:
@@ -140,11 +152,20 @@ class EpicycleScene(MovingCameraScene):
         recon_ext = np.append(self.recon, self.recon[0])
         runs = mask_runs(self.jump_mask)
 
+        # -- start reveal: a faint colored original as a reference, shown in
+        #    the full view only (the zoom inset stays clean). Sits behind
+        #    everything else.
+        if s.start_reveal == "original" and s.source_image and not zoomed:
+            ref = ImageMobject(s.source_image)
+            _fit_image(ref, 0.9)
+            ref.set_opacity(s.start_opacity)
+            self.add(ref)
+
         # -- ghost of the finished shape (normal sub-paths only).
         #    ghost_mode: static = always visible; fadein = grows with progress;
         #    late = only appears in the last third (protects the reveal)
         ghost = VGroup()
-        if s.ghost and s.ghost_opacity > 0:
+        if s.ghost and s.ghost_opacity > 0 and s.start_reveal == "line":
             g_op = s.ghost_opacity
             for a, b, jump in runs:
                 if jump:
@@ -351,7 +372,7 @@ class EpicycleScene(MovingCameraScene):
         #    share of `duration` seconds long.
         self.play(tracker.animate.set_value(s.end_t),
                   run_time=s.duration * (s.end_t - s.start_t),
-                  rate_func=linear)
+                  rate_func=EASE_FUNCS[s.ease])
         if s.hold > 0 or s.end_hold > 0 or s.end_card > 0:
             if s.hold > 0:
                 self.wait(s.hold)
@@ -361,30 +382,51 @@ class EpicycleScene(MovingCameraScene):
             if fading:
                 self.play(*[FadeOut(g) for g in fading], run_time=3)
             if s.end_card > 0:
-                # scale the finished drawing up to fill the frame and hold —
-                # a natural outro shot. Identical timing in both views keeps
-                # the full/zoom renders frame-synced.
-                # spend the same time whether or not this view has a label,
-                # so the full/zoom timelines never drift apart (0.6s is a
-                # whole number of frames at both 15 and 60 fps)
+                # Outro shot, held for end_card seconds. end_reveal chooses:
+                #   line     = scale the finished line drawing up to fill frame
+                #   original = crossfade the drawing into the colored original
+                #   none     = just settle and hold (reset zoom to the full view)
+                # Identical timing in both views keeps full/zoom frame-synced.
+                # spend the same 0.6s whether or not this view has a label, so
+                # the timelines never drift (0.6s is a whole number of frames
+                # at both 15 and 60 fps).
                 if s.label:
                     self.play(FadeOut(label), run_time=0.6)
                 else:
                     self.wait(0.6)
-                anims = []
-                if zoomed:
-                    frame.clear_updaters()
-                    for vm in VGroup(trace, ghost).family_members_with_points():
-                        vm.set_stroke(width=vm.get_stroke_width() * cam_scale)
-                    anims.append(frame.animate.set(
-                        width=config.frame_width).move_to(ORIGIN))
                 drawing = VGroup(trace, ghost)
-                span_h = max(drawing.height, 1e-6)
-                span_w = max(drawing.width, 1e-6)
-                factor = min(0.9 * config.frame_height / span_h,
-                             0.95 * config.frame_width / span_w)
-                anims.append(drawing.animate.scale(factor).move_to(ORIGIN))
-                self.play(*anims, run_time=2)
-                self.wait(s.end_card)
+                if s.end_reveal == "original" and s.source_image:
+                    img = ImageMobject(s.source_image)
+                    _fit_image(img, 0.92)
+                    anims = [FadeIn(img), FadeOut(drawing)]
+                    if zoomed:
+                        frame.clear_updaters()
+                        anims.append(frame.animate.set(
+                            width=config.frame_width).move_to(ORIGIN))
+                    self.play(*anims, run_time=max(s.end_crossfade, 1e-3))
+                    self.wait(s.end_card)
+                elif s.end_reveal == "none":
+                    if zoomed:
+                        frame.clear_updaters()
+                        self.play(frame.animate.set(
+                            width=config.frame_width).move_to(ORIGIN), run_time=2)
+                    else:
+                        self.wait(2)
+                    self.wait(s.end_card)
+                else:  # line
+                    anims = []
+                    if zoomed:
+                        frame.clear_updaters()
+                        for vm in drawing.family_members_with_points():
+                            vm.set_stroke(width=vm.get_stroke_width() * cam_scale)
+                        anims.append(frame.animate.set(
+                            width=config.frame_width).move_to(ORIGIN))
+                    span_h = max(drawing.height, 1e-6)
+                    span_w = max(drawing.width, 1e-6)
+                    factor = min(0.9 * config.frame_height / span_h,
+                                 0.95 * config.frame_width / span_w)
+                    anims.append(drawing.animate.scale(factor).move_to(ORIGIN))
+                    self.play(*anims, run_time=2)
+                    self.wait(s.end_card)
             if s.end_hold > 0:
                 self.wait(s.end_hold)

@@ -100,6 +100,36 @@ zoom_factor: 8
 cam_lag: 0           # zoom camera: 0 = locked on pen tip; >0 = lazy follow (s)
 fps: 60              # production is 1920x1080 at this fps (--preview: 480p15)
 parallel: true       # render full + zoom as two parallel processes
+
+# --- motion / background ---
+ease: none           # none | in | out | inout — draw-speed easing. NOTE:
+                     # timeline.json assumes linear; keep 'none' if you script
+                     # narration to exact contour times.
+bg_color: "#161616"  # frame background color
+
+# --- reference imagery & reveals ---
+# source_image: original.png  # colored original; enables the *_reveal options
+start_reveal: line   # none | line | original — faint intro reference
+start_opacity: 0.12  # opacity when start_reveal is 'original'
+end_reveal: line     # none | line | original — what the end card shows
+end_crossfade: 1.0   # seconds to dissolve the drawing into the end image
+                     # (end_card must be > 0 for any end reveal to show)
+
+# --- intro / outro title cards (set a title to enable) ---
+# intro_title: "TITLE"
+# intro_subtitle: "subtitle"
+# intro_seconds: 3
+# outro_title: "Thanks for watching"
+# outro_subtitle: "Subscribe for more"
+# outro_seconds: 4
+
+# --- audio: mux a music/narration bed into the finals ---
+# audio: track.mp3
+
+# --- vertical (9:16) short of a window of the deliverable ---
+shorts: false        # true = also emit <name>_short.mp4 (1080x1920)
+shorts_start: 0.0    # crop window as a fraction of the full video (0..1)
+shorts_end: 1.0
 """
 
 
@@ -269,7 +299,7 @@ def render_view(view: str, coeffs, freqs, recon, jump_mask, s: Settings,
     px_w, px_h, fps = (854, 480, 15) if s.preview else (1920, 1080, s.fps)
     with tempconfig({
         "pixel_width": px_w, "pixel_height": px_h, "frame_rate": fps,
-        "background_color": BG_COLOR,
+        "background_color": s.bg_color or BG_COLOR,
         "disable_caching": True, "verbosity": "ERROR",
         "media_dir": str(outdir / f"media_{view}"),
         "output_file": f"{name}_{view}",
@@ -315,6 +345,116 @@ def composite_pip(full: Path, zoom: Path, out: Path) -> None:
         check=True)
 
 
+def _find_font() -> str:
+    """A bold TTF for title cards; falls back to any DejaVu/Ubuntu face."""
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        str(Path(sys.executable).parent.parent / "fonts" / "Ubuntu-M.ttf"),
+    ]
+    for c in candidates:
+        if Path(c).exists():
+            return c
+    hits = list(Path("/usr/share/fonts").rglob("*.ttf"))
+    return str(hits[0]) if hits else "sans"
+
+
+def _probe_duration(video: Path) -> float:
+    """Seconds of a video via ffprobe (0.0 if it can't be read)."""
+    ffprobe = str(Path(ffmpeg_bin()).with_name("ffprobe"))
+    out = subprocess.run(
+        [ffprobe, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nw=1:nk=1", str(video)],
+        capture_output=True, text=True)
+    try:
+        return float(out.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
+def _card_clip(title: str, subtitle: str | None, seconds: float, bg: str,
+               w: int, h: int, fps: int, out: Path, workdir: Path) -> Path:
+    """Render a solid-background title card (title + optional subtitle)."""
+    font = _find_font()
+    title_f = workdir / "_card_title.txt"
+    title_f.write_text(title)
+    draws = [(f"drawtext=fontfile='{font}':textfile='{title_f}':"
+              f"fontcolor=white:fontsize={int(h * 0.085)}:"
+              f"x=(w-text_w)/2:y=(h-text_h)/2-{int(h * 0.04)}")]
+    if subtitle:
+        sub_f = workdir / "_card_sub.txt"
+        sub_f.write_text(subtitle)
+        draws.append(f"drawtext=fontfile='{font}':textfile='{sub_f}':"
+                     f"fontcolor=0xB0B0B0:fontsize={int(h * 0.042)}:"
+                     f"x=(w-text_w)/2:y=(h-text_h)/2+{int(h * 0.06)}")
+    vf = (f"color=c={bg}:s={w}x{h}:d={seconds}:r={fps},format=yuv420p,"
+          + ",".join(draws))
+    subprocess.run(
+        [ffmpeg_bin(), "-y", "-v", "error", "-f", "lavfi", "-i", vf,
+         "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+         "-pix_fmt", "yuv420p", str(out)],
+        check=True)
+    return out
+
+
+def add_cards(video: Path, s: Settings, w: int, h: int, fps: int,
+              workdir: Path) -> None:
+    """Prepend an intro card and/or append an outro card to `video`."""
+    bg = s.bg_color or "#161616"
+    clips: list[Path] = []
+    if s.intro_title and s.intro_seconds > 0:
+        clips.append(_card_clip(s.intro_title, s.intro_subtitle, s.intro_seconds,
+                                bg, w, h, fps, workdir / "_intro.mp4", workdir))
+    clips.append(video)
+    if s.outro_title and s.outro_seconds > 0:
+        clips.append(_card_clip(s.outro_title, s.outro_subtitle, s.outro_seconds,
+                                bg, w, h, fps, workdir / "_outro.mp4", workdir))
+    if len(clips) == 1:
+        return
+    inputs: list[str] = []
+    for c in clips:
+        inputs += ["-i", str(c)]
+    streams = "".join(f"[{i}:v]" for i in range(len(clips)))
+    filt = f"{streams}concat=n={len(clips)}:v=1:a=0[v]"
+    tmp = video.with_name(video.stem + ".carded.mp4")
+    subprocess.run(
+        [ffmpeg_bin(), "-y", "-v", "error", *inputs, "-filter_complex", filt,
+         "-map", "[v]", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+         "-pix_fmt", "yuv420p", str(tmp)],
+        check=True)
+    tmp.replace(video)
+    for c in clips:
+        if c != video and c.exists():
+            c.unlink()
+
+
+def mux_audio(video: Path, audio: Path) -> None:
+    """Mux an audio track onto `video`, trimmed to the shorter of the two."""
+    tmp = video.with_name(video.stem + ".audio.mp4")
+    subprocess.run(
+        [ffmpeg_bin(), "-y", "-v", "error", "-i", str(video), "-i", str(audio),
+         "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac",
+         "-b:a", "192k", "-shortest", str(tmp)],
+        check=True)
+    tmp.replace(video)
+
+
+def make_short(video: Path, start_frac: float, end_frac: float, out: Path,
+               h: int, fps: int) -> None:
+    """Center-crop a 9:16 vertical Short from a time window of `video`."""
+    dur = _probe_duration(video)
+    t0, t1 = start_frac * dur, end_frac * dur
+    # crop full height, 9:16 width, centered; then scale up to 1080x1920
+    filt = ("crop=w=trunc(ih*9/16/2)*2:h=ih:x=(iw-ow)/2:y=0,"
+            "scale=1080:1920,format=yuv420p")
+    subprocess.run(
+        [ffmpeg_bin(), "-y", "-v", "error", "-ss", f"{t0:.3f}", "-to",
+         f"{t1:.3f}", "-i", str(video), "-vf", filt, "-r", str(fps),
+         "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+         "-pix_fmt", "yuv420p", str(out)],
+        check=True)
+
+
 def write_timeline(jump_mask, duration: float, path: Path) -> Path:
     """Per-contour draw times, so commentary can be scripted to the render."""
     def ts(sec: float) -> str:
@@ -349,6 +489,17 @@ def run(image_path: Path, s: Settings) -> dict[str, Path]:
     name = image_path.stem
     outdir = Path(s.output) if s.output else Path("output") / name
     outdir.mkdir(parents=True, exist_ok=True)
+
+    # resolve optional assets relative to the project folder, then check them
+    proj = image_path.parent
+    for attr in ("source_image", "audio"):
+        val = getattr(s, attr)
+        if val and not Path(val).is_absolute():
+            cand = proj / val
+            setattr(s, attr, str(cand if cand.exists() else Path(val)))
+        val = getattr(s, attr)
+        if val and not Path(val).exists():
+            raise SystemExit(f"{attr} not found: {val}")
 
     from epicycle_lib.fourier import fourier_series
     from epicycle_lib.image_to_path import extract_path
@@ -408,6 +559,24 @@ def run(image_path: Path, s: Settings) -> dict[str, Path]:
         composite_pip(rendered["full"], rendered["zoom"], pip_out)
         rendered["pip"] = pip_out
         print(f"  -> {pip_out}  ({time.perf_counter() - t0:.1f}s)")
+
+    # -- post: title cards, audio, vertical short (all config-gated) --
+    px_w, px_h, fps = (854, 480, 15) if s.preview else (1920, 1080, s.fps)
+    finals = [rendered["pip"]] if "pip" in rendered else [rendered[v] for v in views]
+    if (s.intro_title or s.outro_title):
+        print("Adding title cards...")
+        for f in finals:
+            add_cards(f, s, px_w, px_h, fps, outdir)
+    if s.audio:
+        print(f"Muxing audio ({Path(s.audio).name})...")
+        for f in finals:
+            mux_audio(f, Path(s.audio))
+    if s.shorts:
+        print("Rendering vertical short...")
+        short_out = outdir / f"{name}_short.mp4"
+        make_short(finals[0], s.shorts_start, s.shorts_end, short_out, px_h, fps)
+        rendered["short"] = short_out
+        print(f"  -> {short_out}")
     return rendered
 
 
