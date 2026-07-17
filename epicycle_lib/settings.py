@@ -71,14 +71,18 @@ class Settings:
             return int(self.samples)
         return max(4096, 10 * self.n_vectors)
 
-    def apply_yaml(self, path: str | Path) -> None:
+    def apply_yaml(self, path: str | Path) -> str | None:
+        """Apply a YAML config; returns its 'image' key (project configs
+        name their input image there) or None."""
         cfg = yaml.safe_load(Path(path).read_text()) or {}
+        image = cfg.pop("image", None)
         valid = {f.name for f in fields(self)}
         for key, value in cfg.items():
             name = key.replace("-", "_")
             if name not in valid:
                 raise SystemExit(f"Unknown key in {path}: {key!r}")
             setattr(self, name, value)
+        return image
 
     def validate(self) -> None:
         if self.detail not in DETAIL_VECTORS:

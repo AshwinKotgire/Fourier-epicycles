@@ -3,3 +3,8 @@ media/
 __pycache__/
 *.pyc
 *.npz
+# project folders: track config.yaml + source image, not render artifacts
+projects/*/*.mp4
+projects/*/media_*/
+projects/*/inspect.png
+projects/*/timeline.json

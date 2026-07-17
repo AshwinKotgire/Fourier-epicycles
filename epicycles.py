@@ -5,8 +5,17 @@ Usage (inside the `manim` conda env):
     python epicycles.py assets/jolly_roger.png --duration 180 --detail high
     python epicycles.py assets/luffy.png --config configs/luffy.yaml --view zoom --preview
 
-Each run produces <name>_full.mp4 and/or <name>_zoom.mp4 in output/<name>/,
-rendered from one deterministic timeline so the two stay frame-synced.
+Project-folder workflow:
+    python epicycles.py init nika_dance --image assets/nika_dance.png
+        -> creates projects/nika_dance/config.yaml (fully documented; the
+           image is copied into the folder). Edit it, then:
+    python epicycles.py projects/nika_dance
+        -> runs the whole pipeline from that config; outputs land in the
+           project folder. CLI flags still override (e.g. --preview).
+
+Each run produces <name>_full.mp4 and/or <name>_zoom.mp4 (plus _pip.mp4 for
+--view pip), rendered from one deterministic timeline so views stay
+frame-synced.
 """
 from __future__ import annotations
 
@@ -30,10 +39,89 @@ def ffmpeg_bin() -> str:
     return str(env_ffmpeg) if env_ffmpeg.exists() else "ffmpeg"
 
 
+PROJECT_CONFIG_TEMPLATE = """\
+# Epicycle project config - run with: python epicycles.py {folder}
+# CLI flags override anything set here (e.g. --preview for a fast check).
+
+image: {image}       # input PNG (near-white bg / darker lines) or SVG,
+                     # relative to this folder (or to the repo root)
+
+duration: 60         # seconds for one full draw of the shape
+detail: high         # low = 50, medium = 150, high = 400 vectors
+# vectors: 800       # explicit vector count (overrides detail)
+# samples: 16384     # path sample count (default: max(4096, 10 * vectors));
+                     # method points uses samples/4 tour points (min 1000)
+
+mode: full           # full = all contours | outline = largest contour only
+extract: auto        # auto | otsu | alpha | canny
+method: contour      # contour = ordered findContours loops (default)
+                     # vtracer = bitmap -> SVG splines
+                     # points  = unordered point cloud, greedy NN tour
+# min-area: 0.001    # drop contours below this fraction of image area
+# canny-low: 60      # only used with extract: canny
+# canny-high: 160
+smooth: 0.2          # 0 = raw pixel contours .. 1 = heavy simplification
+
+fill: 0.8            # drawing height as a fraction of frame height
+hold: 0              # >0: hold after the draw before the machinery fades
+end_hold: 0          # >0: hold on the finished drawing after the fade
+end_card: 0          # >0: scale the drawing up to fill the frame and hold (s)
+# start-t: 0         # render only a slice of the timeline (0..1)
+# end-t: 1
+
+theme: classic       # classic | straw-hat | zoro | ace
+# trace-color: "#FF7043"  # explicit hex trace color, overrides theme
+trace_fade: 0        # >0 dims the settled path -> glowing comet head (try 0.6)
+vignette: 0          # 0..1 radial background gradient
+arrow_width: 0.5     # vector shaft thickness scale (1.0 = original)
+arrow_head: 0.5      # vector arrowhead size scale (1.0 = original)
+arrow_opacity: 0.5   # vector arrow opacity scale (1.0 = original)
+ghost: true          # faint preview of the final shape from t=0
+ghost_mode: static   # static | fadein | late
+label: true          # "N rotating vectors" corner label
+
+view: pip            # full | zoom | both | pip (zoom inset in the full view)
+# pip_inset_label: false
+zoom_factor: 8
+cam_lag: 0           # zoom camera: 0 = locked on pen tip; >0 = lazy follow (s)
+fps: 60              # production is 1920x1080 at this fps (--preview: 480p15)
+parallel: true       # render full + zoom as two parallel processes
+"""
+
+
+def init_project(argv: list[str]) -> None:
+    p = argparse.ArgumentParser(
+        prog="epicycles.py init",
+        description="Scaffold a project folder with a documented config.")
+    p.add_argument("name", help="project name -> projects/<name>/")
+    p.add_argument("--image", help="input image; copied into the folder")
+    args = p.parse_args(argv)
+
+    folder = Path("projects") / args.name
+    cfg_file = folder / "config.yaml"
+    if cfg_file.exists():
+        raise SystemExit(f"{cfg_file} already exists - edit it or pick "
+                         "another name")
+    folder.mkdir(parents=True, exist_ok=True)
+
+    image_value = "CHANGE_ME.png   # <- point this at your input image"
+    if args.image:
+        src = Path(args.image)
+        if not src.exists():
+            raise SystemExit(f"No such image: {src}")
+        shutil.copy2(src, folder / src.name)
+        image_value = src.name
+    cfg_file.write_text(PROJECT_CONFIG_TEMPLATE.format(
+        folder=folder, image=image_value))
+    print(f"Created {cfg_file}")
+    print(f"Edit it, then render with: python epicycles.py {folder}")
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("image", help="input PNG (near-white bg / darker lines) or SVG")
+    p.add_argument("image", help="input PNG (near-white bg / darker lines) or "
+                                 "SVG, or a project folder with a config.yaml")
     p.add_argument("--config", help="per-image YAML; CLI flags override it")
     p.add_argument("--duration", type=float, help="seconds for one full draw")
     p.add_argument("--detail", choices=["low", "medium", "high"],
@@ -103,10 +191,11 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def build_settings(args: argparse.Namespace) -> Settings:
+def build_settings(args: argparse.Namespace) -> tuple[Settings, str | None]:
     s = Settings()
+    cfg_image = None
     if args.config:
-        s.apply_yaml(args.config)
+        cfg_image = s.apply_yaml(args.config)
     scalar_flags = ["duration", "detail", "vectors", "samples", "mode", "extract",
                     "method", "min_area", "canny_low", "canny_high", "smooth", "fill",
                     "hold", "end_hold", "end_card", "start_t", "end_t",
@@ -129,7 +218,7 @@ def build_settings(args: argparse.Namespace) -> Settings:
         if getattr(args, flag):
             setattr(s, flag, True)
     s.validate()
-    return s
+    return s, cfg_image
 
 
 def render_view(view: str, coeffs, freqs, recon, jump_mask, s: Settings,
@@ -261,9 +350,32 @@ def run(image_path: Path, s: Settings) -> dict[str, Path]:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "init":
+        init_project(sys.argv[2:])
+        return
+
     args = parse_args()
-    s = build_settings(args)
-    run(Path(args.image), s)
+    target = Path(args.image)
+    if target.is_dir():
+        if not args.config:
+            cfg_file = target / "config.yaml"
+            if not cfg_file.exists():
+                raise SystemExit(f"{target} is a folder but has no "
+                                 "config.yaml - create one with: "
+                                 f"python epicycles.py init <name>")
+            args.config = str(cfg_file)
+    s, cfg_image = build_settings(args)
+
+    if target.is_dir():
+        if not cfg_image or "CHANGE_ME" in str(cfg_image):
+            raise SystemExit(f"Set the 'image:' key in {args.config} first")
+        in_project = target / str(cfg_image)
+        image = in_project if in_project.exists() else Path(str(cfg_image))
+        if s.output is None:
+            s.output = str(target)
+    else:
+        image = target
+    run(image, s)
 
 
 if __name__ == "__main__":

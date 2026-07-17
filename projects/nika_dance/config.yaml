@@ -1,0 +1,46 @@
+# Epicycle project config - run with: python epicycles.py projects/nika_dance
+# CLI flags override anything set here (e.g. --preview for a fast check).
+
+image: nika_dance.png       # input PNG (near-white bg / darker lines) or SVG,
+                     # relative to this folder (or to the repo root)
+
+duration: 60         # seconds for one full draw of the shape
+detail: high         # low = 50, medium = 150, high = 400 vectors
+vectors: 800           # explicit vector count (overrides detail)
+samples: 16384       # path sample count (default: max(4096, 10 * vectors));
+                     # method points uses samples/4 tour points (min 1000)
+
+mode: full           # full = all contours | outline = largest contour only
+extract: auto        # auto | otsu | alpha | canny
+method: points       # contour = ordered findContours loops (default)
+                     # vtracer = bitmap -> SVG splines
+                     # points  = unordered point cloud, greedy NN tour
+# min-area: 0.001    # drop contours below this fraction of image area
+# canny-low: 60      # only used with extract: canny
+# canny-high: 160
+smooth: 0.2          # 0 = raw pixel contours .. 1 = heavy simplification
+
+fill: 0.8            # drawing height as a fraction of frame height
+hold: 0              # >0: hold after the draw before the machinery fades
+end_hold: 0          # >0: hold on the finished drawing after the fade
+end_card: 5          # >0: scale the drawing up to fill the frame and hold (s)
+# start-t: 0         # render only a slice of the timeline (0..1)
+# end-t: 1
+
+theme: straw-hat       # classic | straw-hat | zoro | ace
+# trace-color: "#FF7043"  # explicit hex trace color, overrides theme
+trace_fade: 0.6        # >0 dims the settled path -> glowing comet head (try 0.6)
+vignette: 0.3          # 0..1 radial background gradient
+arrow_width: 0.5     # vector shaft thickness scale (1.0 = original)
+arrow_head: 0.5      # vector arrowhead size scale (1.0 = original)
+arrow_opacity: 0.5   # vector arrow opacity scale (1.0 = original)
+ghost: true          # faint preview of the final shape from t=0
+ghost_mode: static   # static | fadein | late
+label: true          # "N rotating vectors" corner label
+
+view: pip            # full | zoom | both | pip (zoom inset in the full view)
+# pip_inset_label: false
+zoom_factor: 8
+cam_lag: 0           # zoom camera: 0 = locked on pen tip; >0 = lazy follow (s)
+fps: 60              # production is 1920x1080 at this fps (--preview: 480p15)
+parallel: true       # render full + zoom as two parallel processes
