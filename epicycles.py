@@ -75,7 +75,10 @@ trace_fade: 0        # >0 dims the settled path -> glowing comet head (try 0.6)
 vignette: 0          # 0..1 radial background gradient
 arrow_width: 0.5     # vector shaft thickness scale (1.0 = original)
 arrow_head: 0.5      # vector arrowhead size scale (1.0 = original)
-arrow_opacity: 0.5   # vector arrow opacity scale (1.0 = original)
+arrow_opacity: 0.5   # vector arrow opacity scale (1.0 = original);
+                     # arrows fade in decreasing order of size down the chain
+circle_opacity: 0.5  # circle brightness scale (1.0 = original);
+                     # larger circles stay brighter than smaller ones
 ghost: true          # faint preview of the final shape from t=0
 ghost_mode: static   # static | fadein | late
 label: true          # "N rotating vectors" corner label
@@ -165,6 +168,8 @@ def parse_args() -> argparse.Namespace:
                    help="vector arrowhead size scale (default 0.5, 1.0 = original)")
     p.add_argument("--arrow-opacity", type=float, dest="arrow_opacity",
                    help="vector arrow opacity scale (default 0.5, 1.0 = original)")
+    p.add_argument("--circle-opacity", type=float, dest="circle_opacity",
+                   help="circle brightness scale (default 0.5, 1.0 = original)")
     p.add_argument("--trace-fade", type=float, dest="trace_fade",
                    help="0 = trace stays bright; >0 dims the settled path "
                         "so a glowing head follows the pen")
@@ -201,6 +206,7 @@ def build_settings(args: argparse.Namespace) -> tuple[Settings, str | None]:
                     "hold", "end_hold", "end_card", "start_t", "end_t",
                     "theme", "trace_color", "ghost_mode", "vignette",
                     "arrow_width", "arrow_head", "arrow_opacity",
+                    "circle_opacity",
                     "trace_fade", "view", "zoom_factor", "cam_lag",
                     "fps", "output"]
     for name in scalar_flags:
