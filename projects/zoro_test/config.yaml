@@ -1,0 +1,63 @@
+# zoro_test — feature test on a COLORED line art (white background)
+image: zoro_lineart.png
+
+# --- fidelity (user test spec) ---
+duration: 60
+detail: high
+vectors: 1000
+samples: 10000
+mode: full
+extract: auto        # otsu: clean single strokes (canny doubles them here)
+method: contour
+min_area: 0.0        # keep thin strokes (teeth, brow, ear detail)
+smooth: 0.15
+
+# --- framing ---
+fill: 0.82
+end_hold: 2
+end_card: 3
+
+# --- shown vectors: 1000 fidelity, watchable chain ---
+shown_vectors: 150
+bridge_opacity: 0.15
+
+# --- trace coloring: sample the line art's OWN colors ---
+trace_source: original   # the colored line art is its own color source
+color_strength: 1.0      # pure sampled colors
+color_segments: 400      # fine color detail (green hair -> brown face -> blue robe)
+keyline: 0.4             # rim so pale strokes (teeth, white robe) stay legible
+
+# --- background: light artwork -> auto-pick a dark frame ---
+input_bg: auto
+bg_color: auto
+
+# --- look ---
+theme: zoro          # fallback color for jumps/tip (green, fits Zoro)
+vignette: 0.15
+arrow_opacity: 0.5
+circle_opacity: 0.5
+trace_glow: 1.0
+jump_opacity: 0.35
+tip_glow: 0.6
+bloom: 0.35
+ghost: true
+ghost_mode: fadein
+ghost_opacity: 0.06
+label: true
+
+# --- reveal: colored original with a slow Ken Burns push-in ---
+source_image: zoro_lineart.png
+end_reveal: original
+end_crossfade: 1.0
+reveal_zoom: 1.15
+reveal_pan_x: 0.2
+reveal_pan_y: -0.1
+
+# --- view / output ---
+view: pip
+zoom_factor: 8
+zoom_start: 4
+cam_lag: 0.3
+fps: 30
+parallel: true
+ease: inout

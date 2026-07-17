@@ -101,11 +101,36 @@ cam_lag: 0           # zoom camera: 0 = locked on pen tip; >0 = lazy follow (s)
 fps: 60              # production is 1920x1080 at this fps (--preview: 480p15)
 parallel: true       # render full + zoom as two parallel processes
 
+# --- shown vectors (visual density of the rotating chain) ---
+# shown_vectors: 150 # draw only the N largest epicycles as circles/arrows;
+                     # the traced shape still uses the full `vectors` count.
+                     # High fidelity + a clean, watchable chain. (default: all)
+bridge_opacity: 0.15 # faint connector from the last shown vector to the pen
+
+# --- trace coloring ---
+trace_source: theme  # theme = single color | original = the artwork's own
+                     # colors | gradient = cycle through gradient_colors
+color_strength: 1.0  # (original) 0 = pure theme color .. 1 = pure sampled
+color_segments: 300  # solid-color chunks along the path (more = finer color)
+# color_image: color.png   # (original) image to sample; default: source_image,
+                     # else the line art itself (use a COLORED line art here)
+# gradient_colors: ["#FF5A5F", "#FFB400", "#4ECDC4"]   # (gradient) hex stops
+gradient_cycles: 1.0 # (gradient) times the ramp repeats along the path
+input_bg: auto       # auto | light | dark — the source artwork's background;
+                     # drives bg_color: auto (light art -> dark frame, & v.v.)
+keyline: 0.0         # 0..1 contrasting rim behind the colored trace so even
+                     # near-background colors (white lines) stay visible
+
+# --- transparent export (for overlaying animations in your editor) ---
+transparent: false   # true = per-view .mov with alpha; skips bloom / pip /
+                     # cards / audio / shorts (they would flatten the alpha)
+
 # --- motion / background ---
 ease: none           # none | in | out | inout — draw-speed easing. NOTE:
                      # timeline.json assumes linear; keep 'none' if you script
                      # narration to exact contour times.
-bg_color: "#161616"  # frame background color
+bg_color: "#161616"  # frame background color, or "auto" to pick a frame that
+                     # contrasts the source artwork (see input_bg)
 
 # --- reference imagery & reveals ---
 # source_image: original.png  # colored original; enables the *_reveal options
@@ -114,6 +139,9 @@ start_opacity: 0.12  # opacity when start_reveal is 'original'
 end_reveal: line     # none | line | original — what the end card shows
 end_crossfade: 1.0   # seconds to dissolve the drawing into the end image
                      # (end_card must be > 0 for any end reveal to show)
+reveal_zoom: 1.0     # >1 = slow Ken Burns push-in on the reveal image
+reveal_pan_x: 0.0    # -1..1 horizontal drift during the reveal
+reveal_pan_y: 0.0    # -1..1 vertical drift during the reveal
 
 # --- intro / outro title cards (set a title to enable) ---
 # intro_title: "TITLE"
@@ -234,6 +262,36 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--trace-fade", type=float, dest="trace_fade",
                    help="0 = trace stays bright; >0 dims the settled path "
                         "so a glowing head follows the pen")
+    p.add_argument("--trace-source", choices=["theme", "original", "gradient"],
+                   dest="trace_source",
+                   help="theme = single color; original = sample the artwork's "
+                        "own colors; gradient = cycle through gradient_colors")
+    p.add_argument("--color-image", dest="color_image",
+                   help="image to sample for --trace-source original "
+                        "(default: source_image, else the line art)")
+    p.add_argument("--color-strength", type=float, dest="color_strength",
+                   help="0 = pure theme color .. 1 = pure sampled (default 1)")
+    p.add_argument("--color-segments", type=int, dest="color_segments",
+                   help="solid-color chunks along the path (default 300)")
+    p.add_argument("--gradient-cycles", type=float, dest="gradient_cycles",
+                   help="times the gradient repeats along the path")
+    p.add_argument("--input-bg", choices=["auto", "light", "dark"],
+                   dest="input_bg",
+                   help="source artwork background; drives bg_color: auto")
+    p.add_argument("--keyline", type=float,
+                   help="0..1 contrasting rim behind the colored trace")
+    p.add_argument("--shown-vectors", type=int, dest="shown_vectors",
+                   help="draw only the N largest epicycles (trace uses all)")
+    p.add_argument("--bridge-opacity", type=float, dest="bridge_opacity",
+                   help="faint connector from the last shown vector to the pen")
+    p.add_argument("--transparent", action="store_true",
+                   help="render with alpha -> per-view .mov for compositing")
+    p.add_argument("--reveal-zoom", type=float, dest="reveal_zoom",
+                   help=">1 = slow Ken Burns push-in on the reveal image")
+    p.add_argument("--reveal-pan-x", type=float, dest="reveal_pan_x",
+                   help="-1..1 horizontal drift during the reveal")
+    p.add_argument("--reveal-pan-y", type=float, dest="reveal_pan_y",
+                   help="-1..1 vertical drift during the reveal")
     p.add_argument("--no-ghost", action="store_true")
     p.add_argument("--no-label", action="store_true")
     p.add_argument("--view", choices=["full", "zoom", "both", "pip"],
@@ -271,7 +329,10 @@ def build_settings(args: argparse.Namespace) -> tuple[Settings, str | None]:
                     "jump_opacity", "ghost_opacity", "tip_glow", "bloom",
                     "zoom_start", "dedup_ratio", "dedup_dist",
                     "trace_fade", "view", "zoom_factor", "cam_lag",
-                    "fps", "output"]
+                    "fps", "output", "trace_source", "color_image",
+                    "color_strength", "color_segments", "gradient_cycles",
+                    "input_bg", "keyline", "shown_vectors", "bridge_opacity",
+                    "reveal_zoom", "reveal_pan_x", "reveal_pan_y"]
     for name in scalar_flags:
         value = getattr(args, name)
         if value is not None:
@@ -283,7 +344,7 @@ def build_settings(args: argparse.Namespace) -> tuple[Settings, str | None]:
     if args.via_svg:
         s.method = "vtracer"
     for flag in ("preview", "yes", "double_lines", "parallel",
-                 "pip_inset_label"):
+                 "pip_inset_label", "transparent"):
         if getattr(args, flag):
             setattr(s, flag, True)
     s.validate()
@@ -291,23 +352,29 @@ def build_settings(args: argparse.Namespace) -> tuple[Settings, str | None]:
 
 
 def render_view(view: str, coeffs, freqs, recon, jump_mask, s: Settings,
-                outdir: Path, name: str) -> Path:
+                outdir: Path, name: str, trace_colors=None) -> Path:
     from manim import tempconfig
 
     from epicycle_lib.scene import BG_COLOR, EpicycleScene
 
     px_w, px_h, fps = (854, 480, 15) if s.preview else (1920, 1080, s.fps)
-    with tempconfig({
+    ext = "mov" if s.transparent else "mp4"
+    cfg = {
         "pixel_width": px_w, "pixel_height": px_h, "frame_rate": fps,
-        "background_color": s.bg_color or BG_COLOR,
         "disable_caching": True, "verbosity": "ERROR",
         "media_dir": str(outdir / f"media_{view}"),
         "output_file": f"{name}_{view}",
-    }):
-        scene = EpicycleScene(coeffs, freqs, recon, jump_mask, s, view)
+    }
+    if s.transparent:
+        cfg["transparent"] = True  # manim renders RGBA and writes a .mov
+    else:
+        cfg["background_color"] = s.bg_color or BG_COLOR
+    with tempconfig(cfg):
+        scene = EpicycleScene(coeffs, freqs, recon, jump_mask, s, view,
+                              trace_colors=trace_colors)
         scene.render()
         produced = Path(scene.renderer.file_writer.movie_file_path)
-    final = outdir / f"{name}_{view}.mp4"
+    final = outdir / f"{name}_{view}.{ext}"
     if produced.resolve() != final.resolve():
         shutil.move(str(produced), str(final))
     # manim leaves per-animation fragments under media/; only the moved file
@@ -492,7 +559,7 @@ def run(image_path: Path, s: Settings) -> dict[str, Path]:
 
     # resolve optional assets relative to the project folder, then check them
     proj = image_path.parent
-    for attr in ("source_image", "audio"):
+    for attr in ("source_image", "audio", "color_image"):
         val = getattr(s, attr)
         if val and not Path(val).is_absolute():
             cand = proj / val
@@ -518,6 +585,30 @@ def run(image_path: Path, s: Settings) -> dict[str, Path]:
                               outdir / "timeline.json")
     print(f"Draw timeline: {timeline}")
 
+    # resolve bg_color: auto -> a frame that contrasts the source artwork
+    if s.bg_color == "auto":
+        from epicycle_lib.color import detect_source_light
+        if s.input_bg == "light":
+            src_light = True
+        elif s.input_bg == "dark":
+            src_light = False
+        else:
+            src_light = detect_source_light(data.source_image)
+        s.bg_color = "#0F1115" if src_light else "#F2F2F2"
+        print(f"bg_color auto -> {s.bg_color} (source reads "
+              f"{'light' if src_light else 'dark'})")
+
+    # per-point trace colors (None for a single themed color)
+    from epicycle_lib.color import build_trace_colors
+    trace_colors = build_trace_colors(s, data, image_path)
+    if trace_colors is not None:
+        print(f"Trace coloring: {s.trace_source} "
+              f"({s.color_segments} color segments)")
+
+    if s.transparent:
+        print("Transparent mode: per-view .mov with alpha; "
+              "skipping bloom / pip / cards / audio / shorts")
+
     views = ["full", "zoom"] if s.view in ("both", "pip") else [s.view]
     view_settings = {view: s for view in views}
     if s.view == "pip" and not s.pip_inset_label:
@@ -530,7 +621,8 @@ def run(image_path: Path, s: Settings) -> dict[str, Path]:
         with ProcessPoolExecutor(max_workers=len(views)) as pool:
             futures = {view: pool.submit(render_view, view, coeffs, freqs,
                                          recon, data.jump_mask,
-                                         view_settings[view], outdir, name)
+                                         view_settings[view], outdir, name,
+                                         trace_colors)
                        for view in views}
             for view in views:
                 rendered[view] = futures[view].result()
@@ -541,9 +633,12 @@ def run(image_path: Path, s: Settings) -> dict[str, Path]:
             t0 = time.perf_counter()
             print(f"Rendering {view} view...")
             out = render_view(view, coeffs, freqs, recon, data.jump_mask,
-                              view_settings[view], outdir, name)
+                              view_settings[view], outdir, name, trace_colors)
             rendered[view] = out
             print(f"  -> {out}  ({time.perf_counter() - t0:.1f}s)")
+
+    if s.transparent:
+        return rendered  # alpha .mov files; post-passes would flatten them
 
     if s.bloom > 0:
         t0 = time.perf_counter()
