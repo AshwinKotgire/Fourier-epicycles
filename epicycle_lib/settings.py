@@ -75,6 +75,28 @@ class Settings:
     yes: bool = False             # skip the inspection confirmation prompt
     double_lines: bool = False    # draw both edges of stroked lines (default: one)
     output: str | None = None     # output directory; default output/<image-stem>/
+    # -- reference imagery & reveals -----------------------------------------
+    source_image: str | None = None  # colored original; enables *_reveal: original
+    start_reveal: str = "line"    # none | line | original (faint intro preview)
+    start_opacity: float = 0.12   # opacity when start_reveal is 'original'
+    end_reveal: str = "line"      # none | line | original (what the end card shows)
+    end_crossfade: float = 1.0    # seconds to dissolve the drawing into the end image
+    # -- motion / background --------------------------------------------------
+    ease: str = "none"            # none | in | out | inout (draw-speed easing)
+    bg_color: str = "#161616"     # frame background color
+    # -- audio ----------------------------------------------------------------
+    audio: str | None = None      # music/narration track muxed into the finals
+    # -- intro / outro title cards (active when the title is set) -------------
+    intro_title: str | None = None
+    intro_subtitle: str | None = None
+    intro_seconds: float = 3.0
+    outro_title: str | None = None
+    outro_subtitle: str | None = None
+    outro_seconds: float = 4.0
+    # -- vertical (9:16) shorts crop of the finished deliverable --------------
+    shorts: bool = False
+    shorts_start: float = 0.0     # 0..1 fraction of the deliverable to crop from
+    shorts_end: float = 1.0
 
     @property
     def n_vectors(self) -> int:
@@ -120,6 +142,20 @@ class Settings:
             raise SystemExit(f"--theme must be one of {list(THEMES)}")
         if self.ghost_mode not in ("static", "fadein", "late"):
             raise SystemExit("--ghost-mode must be static, fadein or late")
+        for knob in ("start_reveal", "end_reveal"):
+            if getattr(self, knob) not in ("none", "line", "original"):
+                raise SystemExit(f"{knob} must be none, line or original")
+        if self.ease not in ("none", "in", "out", "inout"):
+            raise SystemExit("ease must be none, in, out or inout")
+        if not 0.0 <= self.start_opacity <= 1.0:
+            raise SystemExit("start_opacity must be in 0..1")
+        if self.end_crossfade < 0.0:
+            raise SystemExit("end_crossfade must be >= 0")
+        if not 0.0 <= self.shorts_start < self.shorts_end <= 1.0:
+            raise SystemExit("need 0 <= shorts_start < shorts_end <= 1")
+        if ("original" in (self.start_reveal, self.end_reveal)
+                and not self.source_image):
+            raise SystemExit("start_reveal/end_reveal 'original' needs source_image")
         if not 0.0 <= self.vignette <= 1.0:
             raise SystemExit("--vignette must be in 0..1")
         for knob in ("arrow_width", "arrow_head", "arrow_opacity",
