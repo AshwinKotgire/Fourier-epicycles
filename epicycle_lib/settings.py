@@ -14,6 +14,11 @@ THEMES = {
     "straw-hat": "#FFC94D",   # Luffy gold
     "zoro": "#7ED957",        # green
     "ace": "#FF7043",         # fire orange
+    # devotional palette (mom's hymn channel)
+    "saffron": "#FF9933",     # saffron / bhagwa
+    "krishna": "#3B7DD8",     # Krishna blue
+    "lotus": "#E75480",       # lotus pink
+    "deep-red": "#C1272D",    # kumkum red
 }
 
 
@@ -81,9 +86,35 @@ class Settings:
     start_opacity: float = 0.12   # opacity when start_reveal is 'original'
     end_reveal: str = "line"      # none | line | original (what the end card shows)
     end_crossfade: float = 1.0    # seconds to dissolve the drawing into the end image
+    # -- trace coloring -------------------------------------------------------
+    trace_source: str = "theme"   # theme | original | gradient
+    color_image: str | None = None  # image sampled for 'original'
+                                  # (default: source_image, else the line art)
+    color_strength: float = 1.0   # 0 = pure theme color .. 1 = pure sampled
+    color_segments: int = 300     # solid-color chunks along the path (more =
+                                  # finer color detail, more mobjects)
+    gradient_colors: list | None = None  # hex list for trace_source: gradient
+    gradient_cycles: float = 1.0  # times the gradient repeats along the path
+    input_bg: str = "auto"        # auto | light | dark — source artwork bg;
+                                  # drives bg_color: auto and readability
+    keyline: float = 0.0          # 0..1 contrasting rim behind the colored
+                                  # trace so any color stays visible
+    # -- shown vectors --------------------------------------------------------
+    shown_vectors: int | None = None  # draw only the N largest epicycles as
+                                  # circles/arrows; the trace still uses all
+    bridge_opacity: float = 0.15  # faint connector from the last shown vector
+                                  # to the true pen tip (only when shown_vectors)
+    # -- transparent export ---------------------------------------------------
+    transparent: bool = False     # render with alpha -> per-view .mov (for
+                                  # overlay compositing); skips bloom/pip/cards
+    # -- ken burns on the reveal ----------------------------------------------
+    reveal_zoom: float = 1.0      # >1 = slow push-in on the reveal image
+    reveal_pan_x: float = 0.0     # -1..1 horizontal drift during the reveal
+    reveal_pan_y: float = 0.0     # -1..1 vertical drift during the reveal
     # -- motion / background --------------------------------------------------
     ease: str = "none"            # none | in | out | inout (draw-speed easing)
-    bg_color: str = "#161616"     # frame background color
+    bg_color: str = "#161616"     # frame background color ("auto" = pick a
+                                  # frame that contrasts the source artwork)
     # -- audio ----------------------------------------------------------------
     audio: str | None = None      # music/narration track muxed into the finals
     # -- intro / outro title cards (active when the title is set) -------------
@@ -156,6 +187,27 @@ class Settings:
         if ("original" in (self.start_reveal, self.end_reveal)
                 and not self.source_image):
             raise SystemExit("start_reveal/end_reveal 'original' needs source_image")
+        if self.trace_source not in ("theme", "original", "gradient"):
+            raise SystemExit("trace_source must be theme, original or gradient")
+        if not 0.0 <= self.color_strength <= 1.0:
+            raise SystemExit("color_strength must be in 0..1")
+        if self.color_segments < 1:
+            raise SystemExit("color_segments must be >= 1")
+        if self.gradient_cycles <= 0.0:
+            raise SystemExit("gradient_cycles must be > 0")
+        if self.input_bg not in ("auto", "light", "dark"):
+            raise SystemExit("input_bg must be auto, light or dark")
+        if not 0.0 <= self.keyline <= 1.0:
+            raise SystemExit("keyline must be in 0..1")
+        if self.shown_vectors is not None and self.shown_vectors < 1:
+            raise SystemExit("shown_vectors must be >= 1")
+        if not 0.0 <= self.bridge_opacity <= 1.0:
+            raise SystemExit("bridge_opacity must be in 0..1")
+        if self.reveal_zoom < 1.0:
+            raise SystemExit("reveal_zoom must be >= 1")
+        for knob in ("reveal_pan_x", "reveal_pan_y"):
+            if not -1.0 <= getattr(self, knob) <= 1.0:
+                raise SystemExit(f"{knob} must be in -1..1")
         if not 0.0 <= self.vignette <= 1.0:
             raise SystemExit("--vignette must be in 0..1")
         for knob in ("arrow_width", "arrow_head", "arrow_opacity",

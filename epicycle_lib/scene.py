@@ -12,6 +12,8 @@ from manim import (DR, ORIGIN, RIGHT, TAU, WHITE, Circle, Dot, FadeIn, FadeOut,
                    VGroup, VMobject, config, linear, rush_from, rush_into,
                    smooth)
 
+from .color import contrast_hex, rgb_to_hex
+
 # draw-speed easing presets (rush_into = ease-in, rush_from = ease-out)
 EASE_FUNCS = {"none": linear, "in": rush_into, "out": rush_from, "inout": smooth}
 
@@ -59,13 +61,17 @@ def mask_runs(mask: np.ndarray) -> list[tuple[int, int, bool]]:
 
 
 class EpicycleScene(MovingCameraScene):
-    def __init__(self, coeffs, freqs, recon, jump_mask, settings, view, **kwargs):
+    def __init__(self, coeffs, freqs, recon, jump_mask, settings, view,
+                 trace_colors=None, **kwargs):
         self.coeffs = np.asarray(coeffs)
         self.freqs = np.asarray(freqs, dtype=np.float64)
         self.recon = np.asarray(recon)
         self.jump_mask = np.asarray(jump_mask, dtype=bool)
         self.s = settings
         self.view = view
+        # (N, 3) RGB per recon point, or None for a single themed color
+        self.trace_colors = (np.asarray(trace_colors, dtype=np.float64)
+                             if trace_colors is not None else None)
         super().__init__(**kwargs)
 
     @staticmethod
@@ -126,7 +132,7 @@ class EpicycleScene(MovingCameraScene):
         # -- vignette: soft radial gradient, brighter center / darker corners.
         #    Added first so everything else draws on top; in the zoom view it
         #    rides along with the camera frame.
-        if s.vignette > 0:
+        if s.vignette > 0 and not s.transparent:
             v = float(s.vignette)
             h_res, w_res = 270, 480
             gy, gx = np.mgrid[0:h_res, 0:w_res]
@@ -144,10 +150,6 @@ class EpicycleScene(MovingCameraScene):
 
         def tip_z(t: float) -> complex:
             return complex(np.sum(coeffs * np.exp(TAU * 1j * freqs * t)))
-
-        def chain_positions(t: float) -> np.ndarray:
-            terms = coeffs * np.exp(TAU * 1j * freqs * t)
-            return np.concatenate([[0j], np.cumsum(terms)])
 
         recon_ext = np.append(self.recon, self.recon[0])
         runs = mask_runs(self.jump_mask)
@@ -199,37 +201,72 @@ class EpicycleScene(MovingCameraScene):
             (wd, min(1.0, op * s.trace_glow)) for wd, op in TRACE_LAYERS[1:]]
         jump_layers = [(wd, min(1.0, op * s.jump_opacity))
                        for wd, op in JUMP_LAYERS]
-        for a, b, jump in runs:
-            if jump and s.jump_opacity <= 0:
-                continue
-            template = VMobject()
-            template.set_points_as_corners(path_points(recon_ext[a:b + 1]))
-            if jump or fade <= 0:
-                for width, opacity in (jump_layers if jump else trace_layers):
+
+        def add_reveal(template, s0, s1, color, width, opacity):
+            piece = VMobject(stroke_color=color, stroke_width=w(width),
+                             stroke_opacity=opacity)
+            updater = self._reveal_updater(template, s0, s1, tracker)
+            piece.add_updater(updater)
+            updater(piece)
+            trace.add(piece)
+
+        if self.trace_colors is not None:
+            # Colored trace: solid-color chunks along each non-jump run, each
+            # chunk tinted by the mean sampled/gradient color for its span. A
+            # contrasting keyline rim (optional) keeps any color legible.
+            # trace_fade's comet head is skipped here (it needs one hue).
+            seg = max(1, n // max(1, s.color_segments))
+            key_hex = contrast_hex(s.bg_color or BG_COLOR)
+            for a, b, jump in runs:
+                if jump:
+                    if s.jump_opacity <= 0:
+                        continue
+                    template = VMobject()
+                    template.set_points_as_corners(path_points(recon_ext[a:b + 1]))
+                    for width, opacity in jump_layers:
+                        add_reveal(template, a / n, b / n, trace_hex, width, opacity)
+                    continue
+                k = a
+                while k < b:
+                    k2 = min(b, k + seg)
+                    col_hex = rgb_to_hex(self.trace_colors[k:k2].mean(axis=0))
+                    template = VMobject()
+                    template.set_points_as_corners(path_points(recon_ext[k:k2 + 1]))
+                    s0, s1 = k / n, k2 / n
+                    if s.keyline > 0:
+                        add_reveal(template, s0, s1, key_hex, 6.0, s.keyline)
+                    add_reveal(template, s0, s1, col_hex, TRACE_LAYERS[0][0], 1.0)
+                    if s.trace_glow > 0:
+                        add_reveal(template, s0, s1, col_hex, 9.0,
+                                   min(1.0, 0.10 * s.trace_glow))
+                    k = k2
+            self.add(trace)
+        else:
+            for a, b, jump in runs:
+                if jump and s.jump_opacity <= 0:
+                    continue
+                template = VMobject()
+                template.set_points_as_corners(path_points(recon_ext[a:b + 1]))
+                if jump or fade <= 0:
+                    for width, opacity in (jump_layers if jump else trace_layers):
+                        add_reveal(template, a / n, b / n, trace_hex, width, opacity)
+                    continue
+                settled = VMobject(stroke_color=trace_hex,
+                                   stroke_width=w(TRACE_LAYERS[0][0]),
+                                   stroke_opacity=1.0 - 0.65 * fade)
+                updater = self._reveal_updater(template, a / n, b / n, tracker)
+                settled.add_updater(updater)
+                updater(settled)
+                trace.add(settled)
+                for width, opacity in trace_layers:
                     piece = VMobject(stroke_color=trace_hex, stroke_width=w(width),
                                      stroke_opacity=opacity)
-                    updater = self._reveal_updater(template, a / n, b / n,
-                                                   tracker)
+                    updater = self._head_updater(template, a / n, b / n, tracker,
+                                                 head_window)
                     piece.add_updater(updater)
                     updater(piece)
                     trace.add(piece)
-                continue
-            settled = VMobject(stroke_color=trace_hex,
-                               stroke_width=w(TRACE_LAYERS[0][0]),
-                               stroke_opacity=1.0 - 0.65 * fade)
-            updater = self._reveal_updater(template, a / n, b / n, tracker)
-            settled.add_updater(updater)
-            updater(settled)
-            trace.add(settled)
-            for width, opacity in trace_layers:
-                piece = VMobject(stroke_color=trace_hex, stroke_width=w(width),
-                                 stroke_opacity=opacity)
-                updater = self._head_updater(template, a / n, b / n, tracker,
-                                             head_window)
-                piece.add_updater(updater)
-                updater(piece)
-                trace.add(piece)
-        self.add(trace)
+            self.add(trace)
 
         # -- circles: visibility decided in camera space (pixels on screen);
         #    larger circles slightly brighter, like the 3b1b original
@@ -238,9 +275,34 @@ class EpicycleScene(MovingCameraScene):
         px_per_unit = config.pixel_width / (config.frame_width / cam_scale)
         visibility = np.clip((mags * px_per_unit - 2.0) / 2.0, 0.0, 1.0)
         brightness = np.minimum(1.0, (0.25 + 0.4 * mag_ratio) * s.circle_opacity)
+        widths = (0.5 + 2.0 * mag_ratio) * s.arrow_width
+        head_scale = s.arrow_head
+        head_max = HEAD_LENGTH * head_scale / cam_scale
+        # opacity tapers down the chain like the widths do, so the tiny fast
+        # arrows near the pen fade instead of forming a bright cluster
+        arrow_opacity = np.minimum(
+            1.0, 0.95 * s.arrow_opacity * (0.45 + 0.55 * mag_ratio))
+
+        # which epicycles to draw as circles/arrows. Default: the whole chain
+        # (freq order, so the last arrow reaches the pen exactly). shown_vectors
+        # keeps only the N largest by magnitude (in chain order) and bridges the
+        # gap to the true pen tip with a faint line — the trace still uses all.
+        order = np.arange(n_vec)
+        bridging = False
+        if s.shown_vectors is not None and s.shown_vectors < n_vec:
+            order = np.sort(np.argsort(-mags)[:int(s.shown_vectors)])
+            bridging = True
+        sub_coeffs = coeffs[order]
+        sub_freqs = freqs[order]
+        n_show = len(order)
+
+        def chain_positions(t: float) -> np.ndarray:
+            terms = sub_coeffs * np.exp(TAU * 1j * sub_freqs * t)
+            return np.concatenate([[0j], np.cumsum(terms)])
+
         circles = VGroup()
-        circle_indices = []
-        for k in range(n_vec):
+        circle_pos = []
+        for p, k in enumerate(order):
             if visibility[k] <= 0.01 or mags[k] <= 1e-6:
                 continue
             circles.add(Circle(
@@ -249,47 +311,51 @@ class EpicycleScene(MovingCameraScene):
                                * s.circle_width),
                 stroke_opacity=brightness[k] * visibility[k],
                 fill_opacity=0))
-            circle_indices.append(k)
+            circle_pos.append(p)
 
         # -- vector chain: white arrows (shaft + filled head), widths tapering
         #    with coefficient magnitude
-        widths = (0.5 + 2.0 * mag_ratio) * s.arrow_width
-        head_scale = s.arrow_head
-        head_max = HEAD_LENGTH * head_scale / cam_scale
-        # opacity tapers down the chain like the widths do, so the tiny fast
-        # arrows near the pen fade instead of forming a bright cluster
-        arrow_opacity = np.minimum(
-            1.0, 0.95 * s.arrow_opacity * (0.45 + 0.55 * mag_ratio))
         shafts = VGroup(*[
             Line(ORIGIN, RIGHT, stroke_color=VECTOR_COLOR,
                  stroke_width=w(widths[k]), stroke_opacity=arrow_opacity[k])
-            for k in range(n_vec)
+            for k in order
         ])
         heads = VGroup(*[
             VMobject(stroke_width=0, fill_color=VECTOR_COLOR,
                      fill_opacity=arrow_opacity[k])
-            for k in range(n_vec)
+            for k in order
         ])
-        vectors = VGroup(shafts, heads)
+        bridge = VGroup()
+        if bridging and s.bridge_opacity > 0:
+            bridge.add(Line(ORIGIN, RIGHT, stroke_color=VECTOR_COLOR,
+                            stroke_width=w(0.8), stroke_opacity=s.bridge_opacity))
+        vectors = VGroup(shafts, heads, bridge)
 
         def update_kinematics(_) -> None:
             pos = chain_positions(tracker.get_value())
-            for k in range(n_vec):
-                a, b = pos[k], pos[k + 1]
+            for p in range(n_show):
+                a, b = pos[p], pos[p + 1]
                 length = abs(b - a)
                 if length < 1e-8:
-                    shafts[k].put_start_and_end_on(c2p(a), c2p(a + 1e-8))
-                    heads[k].set_points(np.zeros((0, 3)))
+                    shafts[p].put_start_and_end_on(c2p(a), c2p(a + 1e-8))
+                    heads[p].set_points(np.zeros((0, 3)))
                     continue
                 direction = (b - a) / length
                 head = min(head_max, HEAD_LENGTH_RATIO * head_scale * length)
                 base = b - direction * head
-                shafts[k].put_start_and_end_on(c2p(a), c2p(base))
+                shafts[p].put_start_and_end_on(c2p(a), c2p(base))
                 side = direction * 1j * head * HEAD_WIDTH_RATIO
-                heads[k].set_points_as_corners(
+                heads[p].set_points_as_corners(
                     np.array([c2p(b), c2p(base + side), c2p(base - side), c2p(b)]))
-            for circle, k in zip(circles, circle_indices):
-                circle.move_to(c2p(pos[k]))
+            for circle, p in zip(circles, circle_pos):
+                circle.move_to(c2p(pos[p]))
+            if len(bridge) > 0:
+                last = pos[-1]
+                tipz = tip_z(tracker.get_value())
+                if abs(tipz - last) < 1e-8:
+                    bridge[0].set_points(np.zeros((0, 3)))
+                else:
+                    bridge[0].put_start_and_end_on(c2p(last), c2p(tipz))
 
         vectors.add_updater(update_kinematics)
         update_kinematics(vectors)
@@ -348,7 +414,7 @@ class EpicycleScene(MovingCameraScene):
 
         # -- corner label
         if s.label:
-            label = Text(f"{n_vec} rotating vectors", font_size=28,
+            label = Text(f"{n_show} rotating vectors", font_size=28,
                          color=LABEL_COLOR)
             if zoomed:
                 label.scale(1.0 / cam_scale)
@@ -404,7 +470,15 @@ class EpicycleScene(MovingCameraScene):
                         anims.append(frame.animate.set(
                             width=config.frame_width).move_to(ORIGIN))
                     self.play(*anims, run_time=max(s.end_crossfade, 1e-3))
-                    self.wait(s.end_card)
+                    # Ken Burns: slow push-in / drift on the revealed image.
+                    if (s.reveal_zoom > 1.0 or s.reveal_pan_x or s.reveal_pan_y):
+                        shift = np.array([s.reveal_pan_x * config.frame_width * 0.1,
+                                          s.reveal_pan_y * config.frame_height * 0.1,
+                                          0.0])
+                        self.play(img.animate.scale(s.reveal_zoom).shift(shift),
+                                  run_time=max(s.end_card, 1e-3), rate_func=smooth)
+                    else:
+                        self.wait(s.end_card)
                 elif s.end_reveal == "none":
                     if zoomed:
                         frame.clear_updaters()
