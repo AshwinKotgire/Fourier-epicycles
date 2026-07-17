@@ -1,0 +1,41 @@
+# Per-image settings for epicycles.py — pass with --config configs/<name>.yaml.
+# CLI flags override anything set here. All keys are optional.
+
+duration: 60         # seconds for one full draw of the shape
+detail: high         # low = 50, medium = 150, high = 400 vectors
+# vectors: 220       # explicit vector count (overrides detail)
+# samples: 8192      # path sample count (default: max(4096, 10 * vectors))
+
+mode: full           # full = all contours | outline = largest contour only
+extract: auto        # auto | otsu | alpha | canny
+# min_area: 0.001    # drop contours below this fraction of image area
+# canny_low: 60      # only used with extract: canny
+# canny_high: 160
+smooth: 0.2          # 0 = raw pixel contours .. 1 = heavy simplification
+# via_svg: false     # route the bitmap through vtracer (quality A/B test)
+# double_lines: false  # draw both edges of stroked lines (default: one line per stroke)
+
+fill: 0.8            # drawing height as a fraction of frame height
+hold: 0              # >0: hold after the draw before the machinery fades out
+end_hold: 0          # >0: hold on the finished drawing after the fade
+end_card: 0          # >0: after the fade, scale the drawing up to fill the
+                     # frame and hold this many seconds (outro shot)
+                     # (all 0 = video is exactly `duration` seconds)
+# start_t: 0         # render only a slice of the timeline (0..1) at the same
+# end_t: 1           # speed - for checking minute 2 of a long draw quickly
+
+theme: classic       # trace color preset: classic | straw-hat | zoro | ace
+# trace_color: "#FF7043"  # explicit hex trace color, overrides theme
+trace_fade: 0        # 0 = trace stays bright; >0 dims the settled path so a
+                     # glowing comet head follows the pen (try 0.6)
+vignette: 0          # 0..1 radial background gradient (brighter center)
+ghost: true          # faint preview of the final shape from t=0
+ghost_mode: static   # static | fadein (grows with progress) | late (last third)
+label: true          # "N rotating vectors" corner label
+
+view: both           # full | zoom | both | pip (zoom inset into the full view)
+# pip_inset_label: false  # keep the corner label inside the pip inset
+zoom_factor: 8       # zoom view magnification
+cam_lag: 0           # zoom camera: 0 = locked on the pen tip; >0 = lazy follow (seconds)
+fps: 60
+# parallel: true     # render full + zoom as two parallel processes
