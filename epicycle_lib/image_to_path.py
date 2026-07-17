@@ -186,6 +186,56 @@ def _order_contours(contours: list[np.ndarray]) -> list[np.ndarray]:
     return ordered
 
 
+def _points_chain(contours: list[np.ndarray],
+                  n_samples: int) -> tuple[np.ndarray, np.ndarray]:
+    """The 'points' method: forget the contour structure, treat everything as
+    one unordered point cloud, and let a greedy nearest-neighbour tour over the
+    individual points decide the pen path. Edges much longer than the typical
+    point spacing are flagged as jumps so the renderer dims them."""
+    # Evenly-spaced points along every contour (smoothed contours keep only
+    # sparse corners, which would skew the tour's typical edge length).
+    target = max(1000, n_samples // 4)
+    closed = [np.append(c, c[0]) for c in contours]
+    total = sum(np.abs(np.diff(c)).sum() for c in closed)
+    spacing = max(total / target, 1e-9)
+    parts = []
+    for c in closed:
+        seg = np.abs(np.diff(c))
+        cum = np.concatenate([[0.0], np.cumsum(seg)])
+        if cum[-1] <= 0:
+            continue
+        m = max(8, int(round(cum[-1] / spacing)))
+        svals = np.arange(m) * cum[-1] / m
+        idx = np.clip(np.searchsorted(cum, svals, side="right") - 1,
+                      0, len(seg) - 1)
+        frac = (svals - cum[idx]) / np.maximum(seg[idx], 1e-12)
+        parts.append(c[idx] + (c[idx + 1] - c[idx]) * frac)
+    cloud = np.concatenate(parts)
+
+    n = len(cloud)
+    used = np.zeros(n, dtype=bool)
+    order = np.empty(n, dtype=int)
+    current = int(np.argmin(cloud.imag))  # deterministic start: topmost point
+    for k in range(n):
+        order[k] = current
+        used[current] = True
+        if k + 1 < n:
+            d = np.abs(cloud - cloud[current])
+            d[used] = np.inf
+            current = int(np.argmin(d))
+
+    tour = cloud[order]
+    pts = np.append(tour, tour[0])  # close the chain
+    seg = np.abs(np.diff(pts))
+    positive = seg[seg > 0]
+    median = np.median(positive) if len(positive) else 1.0
+    long_edge = seg > 4 * median
+    flags = np.zeros(len(pts), dtype=bool)
+    flags[:-1] |= long_edge
+    flags[1:] |= long_edge
+    return pts, flags
+
+
 # ---------------------------------------------------------------- chaining
 
 def _build_chain(contours: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
@@ -272,7 +322,7 @@ def extract_path(image_path: str | Path, s: Settings,
     cache_file = None
     if cache_dir is not None:
         params = (hashlib.sha1(raw).hexdigest(), s.extract, s.mode, s.min_area,
-                  s.canny_low, s.canny_high, s.smooth, s.fill, s.via_svg,
+                  s.canny_low, s.canny_high, s.smooth, s.fill, s.method,
                   s.double_lines, n_samples)
         key = hashlib.sha1(repr(params).encode()).hexdigest()[:16]
         cache_file = cache_dir / f"cache_{key}.npz"
@@ -292,11 +342,14 @@ def extract_path(image_path: str | Path, s: Settings,
         contours = _contours_from_svg(image_path, s)
     else:
         binary = _binarize(source_image, s)
-        contours = (_contours_via_vtracer(binary, s) if s.via_svg
+        contours = (_contours_via_vtracer(binary, s) if s.method == "vtracer"
                     else _contours_from_binary(binary, s))
 
-    contours = _order_contours(contours)
-    chain, flags = _build_chain(contours)
+    if s.method == "points":
+        chain, flags = _points_chain(contours, n_samples)
+    else:
+        contours = _order_contours(contours)
+        chain, flags = _build_chain(contours)
     pixel_samples, jump_mask = _resample(chain, flags, n_samples)
     pixel_samples = _round_junctions(pixel_samples, jump_mask)
     samples = _normalize(pixel_samples, s.fill)
