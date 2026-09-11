@@ -8,3 +8,5 @@ projects/*/*.mp4
 projects/*/media_*/
 projects/*/inspect.png
 projects/*/timeline.json
+projects/*/*.mov
+render.log

@@ -1,0 +1,131 @@
+# ganapati_pheta_overlay — transparent corner overlay for pheta-making footage
+#
+# Companion to projects/ganapati_pheta (the full-screen hero version). Two
+# things differ, and both follow from the overlay being shown SMALL:
+#   1. less detail  — the brocade motifs turn to mush below ~400px wide
+#   2. fatter, brighter strokes — a 1.3px line disappears when downscaled to 1/3
+# Output is ganapati_pheta_overlay_full.mov: qtrle / argb, true alpha
+# (verified: 79.5% of the frame is fully transparent).
+image: ganapati_pheta.png
+
+# --- transparent export ------------------------------------------------------
+transparent: true    # per-view .mov with alpha. NOTE this skips bloom, pip,
+                     # title cards, audio and shorts — they all flatten alpha.
+view: full           # no zoom inset: pip is unavailable in transparent mode
+
+# --- fidelity: identical to the hero config, nothing approximated -----------
+# Same extraction as projects/ganapati_pheta: min_area 0.00003 keeps the hatch
+# dashes and dot rows (1412 contours, jumps 11.4%, inside the 15% budget).
+#
+# READ THIS BEFORE PLACING THE OVERLAY. The hatch strokes sit about 2px apart
+# in a 1080 frame. That is a physical limit, not a setting: scaled into a
+# corner at 30% of a 1080p frame (324px) they fall below one pixel and blur
+# together no matter what you do here. To actually see this detail, place the
+# overlay at 50% of frame width or more, or use the hero render for the
+# close-up shots and the overlay only for the wide ones.
+detail: high
+vectors: 12000
+samples: 120000
+mode: full
+extract: auto
+method: contour
+min_area: 0.00003
+smooth: 0.15
+arrow_min_px: 2.0    # 272 arrows instead of 12000, and 2.0 is also the
+                     # threshold below which circles are culled, so every
+                     # drawn arrow has a matching circle and the pen is not
+                     # buried in a hairball of sub-pixel arrowheads. Cost:
+                     # the single closing arrow onto the pen runs 17px on
+                     # average, 92px at worst. The hero config uses 0.5, where
+                     # the arrows are thin and faint enough to take 1146 of
+                     # them and a closing arrow of only 7px.
+
+# --- framing -----------------------------------------------------------------
+aspect: "1:1"        # square overlay sits naturally in a corner
+fill: 0.88
+duration: 150
+hold: 0
+end_hold: 3
+end_card: 0          # no end card: an overlay should not change scale
+ease: inout
+
+# --- PRONOUNCED: everything below is deliberately heavier than the hero -----
+# These are tuned to be viewed at roughly 1/3 size. Scaled down, a 4.2px core
+# reads like the hero config's 1.35px. If you place the overlay LARGER than
+# about half frame width, drop trace_width toward 0.8 or it will look clumsy.
+trace_width: 0.7     # a compromise, and the one knob to retune if you change
+                     # the overlay size: 1.4 reads well at 30% frame width but
+                     # welds the hatching shut, 0.32 (the hero value) keeps
+                     # every hatch stroke separate but vanishes when small.
+trace_glow: 0.35     # lower than before: a strong halo fills the hatch gaps
+tip_size: 0.6        # smaller than default so it stops hiding the hatching,
+                     # but larger than the hero value: shown in a corner, the
+                     # pen still has to be findable at a glance
+tip_glow: 1.0        # bright pen head, easy to follow in a small window
+# These four were raised after a composite test over bright footage: at the
+# hero values the circles were invisible once scaled to a corner. The knobs
+# accept up to 2.0, and circle brightness is (0.25 + 0.4 * mag_ratio) *
+# circle_opacity, so it takes ~1.8 to drive the big circles near full opacity.
+# circle brightness is (0.25 + 0.4 * mag_ratio) * circle_opacity, so a high
+# value lights up the few hundred SMALL circles near the pen as brightly as
+# the big slow ones and the pen ends up inside a bright tangle. 1.2 keeps the
+# big circles bold (0.78) while letting the small ones sit back (0.30).
+circle_opacity: 1.2
+circle_width: 1.6
+arrow_opacity: 1.0
+arrow_width: 1.1
+arrow_head: 0.8
+jump_opacity: 0.12   # still keep the inter-contour jumps nearly invisible
+ghost: true
+ghost_mode: fadein
+ghost_opacity: 0.12  # higher than hero: a faint ghost vanishes over footage
+vignette: 0          # would be an opaque rectangle; skipped in transparent anyway
+bloom: 0             # unavailable in transparent mode; trace_glow replaces it
+
+# --- look: magenta / violet / purple ----------------------------------------
+theme: violet
+circle_color: "#E0AAFF"   # pale lilac: the hero's deep #7B3FE4 disappeared
+                          # against mid-tone footage at overlay size
+vector_color: "#FFE9FF"
+trace_source: gradient
+gradient_colors: ["#FF2D95", "#C13BFF", "#7B2FF7"]
+gradient_cycles: 1.5
+color_segments: 360
+color_strength: 1.0
+
+# --- readability over live footage -------------------------------------------
+# keyline draws a contrasting rim behind the colored trace. Its color is picked
+# as the contrast of bg_color, so bg_color is NOT dead config here even though
+# the rendered background is transparent: a LIGHT bg_color yields a near-black
+# (#101010) rim, which is what keeps a purple line readable over bright,
+# busy pheta-making footage. Set bg_color dark instead if your footage is dark.
+bg_color: "#FFFFFF"
+keyline: 0.5
+input_bg: light
+
+# --- full chain: the final arrowhead sits exactly on the pen -----------------
+# This previously used shown_vectors: 64, which was wrong. shown_vectors builds
+# a SHORTER chain out of the N largest terms, so its last arrow lands on a
+# partial sum rather than the pen: measured 60px off on average and 250px at
+# worst, on a 1080px frame. The sub-pixel terms are individually invisible but
+# collectively move the pen, so they cannot be dropped from the chain.
+# arrow_min_px above gets the speed back without breaking the geometry.
+bridge_opacity: 0.0  # nothing to bridge — the chain is complete
+
+# --- output ------------------------------------------------------------------
+fps: 60
+label: false         # no vector-count label
+                     # See the render-cost note at the bottom of this file.
+parallel: false      # only one view is rendered
+start_reveal: line   # vector ghost, not an image — safe with alpha.
+                     # Do NOT use 'original' here: it adds an opaque photo.
+end_reveal: line
+end_crossfade: 1.0
+shorts: false
+
+# --- render cost (measured, not estimated) ----------------------------------
+# ~1.0 s/frame at 12000 vectors / 120000 samples / arrow_min_px 2.0.
+# 153s x 60fps = ~9200 frames = about 2.5h, single view (no zoom in this one).
+# Earlier this config claimed 45 min; that was with shown_vectors: 64 and the
+# coarser extraction, both of which are gone. Same trade-downs as the hero
+# config apply: fps: 30 halves it.

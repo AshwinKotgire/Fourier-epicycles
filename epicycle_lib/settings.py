@@ -8,17 +8,27 @@ import yaml
 
 DETAIL_VECTORS = {"low": 50, "medium": 150, "high": 400}
 
+# Frame shapes: aspect name -> (production px, preview px). The manim frame
+# width is derived from the pixel aspect, so the scene code adapts for free.
+ASPECTS = {
+    "16:9": ((1920, 1080), (854, 480)),
+    "1:1": ((1080, 1080), (480, 480)),
+    "4:5": ((1080, 1350), (432, 540)),
+    "9:16": ((1080, 1920), (480, 854)),
+}
+
 # Trace-color presets; --trace-color overrides the theme
 THEMES = {
     "classic": "#FFFF00",     # 3b1b yellow
     "straw-hat": "#FFC94D",   # Luffy gold
     "zoro": "#7ED957",        # green
-    "ace": "#FF7043",         # fire orange
+    "ace": "#FF2400",         # fiery red (scarlet flame)
     # devotional palette (mom's hymn channel)
     "saffron": "#FF9933",     # saffron / bhagwa
     "krishna": "#3B7DD8",     # Krishna blue
     "lotus": "#E75480",       # lotus pink
     "deep-red": "#C1272D",    # kumkum red
+    "violet": "#C77DFF",      # magenta / violet / purple
 }
 
 
@@ -51,6 +61,8 @@ class Settings:
     trace_fade: float = 0.0       # 0 = trace stays bright; 1 = settled path dims hard
     theme: str = "classic"        # trace-color preset: classic|straw-hat|zoro|ace
     trace_color: str | None = None  # explicit hex trace color, overrides theme
+    circle_color: str | None = None  # epicycle circle hex (None = 3b1b blue)
+    vector_color: str | None = None  # arrow shaft/head hex (None = white)
     ghost: bool = True            # faint preview of the final shape from t=0
     ghost_mode: str = "static"    # static | fadein (grows with t) | late (last third)
     vignette: float = 0.0         # 0 = flat background; 1 = strong radial gradient
@@ -62,10 +74,18 @@ class Settings:
                                   # larger circles stay brighter than smaller
     circle_width: float = 1.0     # circle stroke width scale; width also tapers
                                   # down the chain with magnitude
+    trace_width: float = 1.0      # drawn-line thickness scale (core, glow halos,
+                                  # keyline, jumps and ghost all scale together)
     trace_glow: float = 1.0       # trace glow halo intensity scale (0 = no halo)
     jump_opacity: float = 1.0     # jump-line visibility scale (0 = hidden)
     ghost_opacity: float = 0.06   # ghost preview stroke opacity
     tip_glow: float = 0.6         # glowing pen-tip highlight intensity (0 = off)
+    tip_size: float = 1.0         # pen-tip highlight RADIUS scale. The tip is
+                                  # sized in scene units, so at 1.0 its halo is
+                                  # 5% of frame height at every resolution and
+                                  # tip_glow only changes its brightness, not
+                                  # its footprint. Lower this on fine line art
+                                  # where a broad tip hides the detail.
     bloom: float = 0.35           # post-render neon bloom strength (0 = off)
     zoom_start: float | None = None  # zoom view eases from this factor to
                                   # zoom_factor over the draw (None = fixed)
@@ -74,6 +94,7 @@ class Settings:
     zoom_factor: float = 8.0
     cam_lag: float = 0.0          # zoom camera: 0 = locked on pen tip; >0 = lazy follow (s)
     fps: int = 60
+    aspect: str = "16:9"          # frame shape: 16:9 | 1:1 | 4:5 | 9:16
     preview: bool = False         # 854x480 @ 15fps fast iteration
     parallel: bool = False        # render full + zoom views as parallel processes
     pip_inset_label: bool = False  # keep the corner label inside the pip inset
@@ -104,6 +125,13 @@ class Settings:
                                   # circles/arrows; the trace still uses all
     bridge_opacity: float = 0.15  # faint connector from the last shown vector
                                   # to the true pen tip (only when shown_vectors)
+    arrow_min_px: float = 0.0     # >0: skip drawing arrows shorter than this
+                                  # many screen pixels. The chain stays whole,
+                                  # so the last arrow still lands exactly on
+                                  # the pen — this is the cheap way to afford a
+                                  # high `vectors` count, since every term past
+                                  # a few hundred is sub-pixel anyway. Ignored
+                                  # when shown_vectors is set.
     # -- transparent export ---------------------------------------------------
     transparent: bool = False     # render with alpha -> per-view .mov (for
                                   # overlay compositing); skips bloom/pip/cards
@@ -128,6 +156,11 @@ class Settings:
     shorts: bool = False
     shorts_start: float = 0.0     # 0..1 fraction of the deliverable to crop from
     shorts_end: float = 1.0
+
+    def resolution(self) -> tuple[int, int, int]:
+        """(pixel_width, pixel_height, fps) for this aspect and preview flag."""
+        prod, prev = ASPECTS[self.aspect]
+        return (*prev, 15) if self.preview else (*prod, self.fps)
 
     @property
     def n_vectors(self) -> int:
@@ -163,12 +196,20 @@ class Settings:
             raise SystemExit("--extract must be auto, otsu, alpha or canny")
         if self.method not in ("contour", "vtracer", "points"):
             raise SystemExit("--method must be contour, vtracer or points")
+        if self.aspect not in ASPECTS:
+            raise SystemExit(f"--aspect must be one of {list(ASPECTS)}")
         if self.view not in ("full", "zoom", "both", "pip"):
             raise SystemExit("--view must be full, zoom, both or pip")
         if not 0.0 <= self.smooth <= 1.0:
             raise SystemExit("--smooth must be in 0..1")
         if not 0.0 <= self.trace_fade <= 1.0:
             raise SystemExit("--trace-fade must be in 0..1")
+        for knob in ("trace_color", "circle_color", "vector_color"):
+            hexval = getattr(self, knob)
+            if hexval is not None and not (
+                    isinstance(hexval, str) and hexval.startswith("#")
+                    and len(hexval) in (4, 7)):
+                raise SystemExit(f"{knob} must be a hex color like #C77DFF")
         if self.theme not in THEMES:
             raise SystemExit(f"--theme must be one of {list(THEMES)}")
         if self.ghost_mode not in ("static", "fadein", "late"):
@@ -203,6 +244,8 @@ class Settings:
             raise SystemExit("shown_vectors must be >= 1")
         if not 0.0 <= self.bridge_opacity <= 1.0:
             raise SystemExit("bridge_opacity must be in 0..1")
+        if self.arrow_min_px < 0.0:
+            raise SystemExit("arrow_min_px must be >= 0")
         if self.reveal_zoom < 1.0:
             raise SystemExit("reveal_zoom must be >= 1")
         for knob in ("reveal_pan_x", "reveal_pan_y"):
@@ -211,9 +254,11 @@ class Settings:
         if not 0.0 <= self.vignette <= 1.0:
             raise SystemExit("--vignette must be in 0..1")
         for knob in ("arrow_width", "arrow_head", "arrow_opacity",
-                     "circle_opacity", "circle_width"):
+                     "circle_opacity", "circle_width", "trace_width"):
             if not 0.0 < getattr(self, knob) <= 2.0:
                 raise SystemExit(f"--{knob.replace('_', '-')} must be in (0, 2]")
+        if not 0.0 < self.tip_size <= 2.0:
+            raise SystemExit("--tip-size must be in (0, 2]")
         for knob in ("trace_glow", "jump_opacity"):
             if not 0.0 <= getattr(self, knob) <= 2.0:
                 raise SystemExit(f"--{knob.replace('_', '-')} must be in 0..2")

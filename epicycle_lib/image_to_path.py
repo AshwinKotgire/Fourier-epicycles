@@ -20,10 +20,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .settings import Settings
+from .settings import ASPECTS, Settings
 
 FRAME_H = 8.0                # manim default frame height in scene units
-FRAME_W = FRAME_H * 16 / 9
+FRAME_W = FRAME_H * 16 / 9   # 16:9 default; _frame_w() honours s.aspect
 
 
 @dataclass
@@ -313,12 +313,19 @@ def _round_junctions(pts: np.ndarray, mask: np.ndarray,
 
 # ---------------------------------------------------------------- normalize
 
-def _normalize(pixel_samples: np.ndarray, fill: float) -> np.ndarray:
+def _frame_w(aspect: str) -> float:
+    """Scene-unit frame width for an aspect name (frame height is always 8)."""
+    (px_w, px_h), _ = ASPECTS.get(aspect, ASPECTS["16:9"])
+    return FRAME_H * px_w / px_h
+
+
+def _normalize(pixel_samples: np.ndarray, fill: float,
+               frame_w: float = FRAME_W) -> np.ndarray:
     z = pixel_samples - pixel_samples.mean()
     z = z.real - 1j * z.imag  # image y points down, manim y points up
     height = max(z.imag.max() - z.imag.min(), 1e-9)
     width = max(z.real.max() - z.real.min(), 1e-9)
-    factor = min(fill * FRAME_H / height, 0.95 * FRAME_W / width)
+    factor = min(fill * FRAME_H / height, 0.95 * frame_w / width)
     z = z * factor
     return z - z.mean()
 
@@ -336,7 +343,8 @@ def extract_path(image_path: str | Path, s: Settings,
     if cache_dir is not None:
         params = (hashlib.sha1(raw).hexdigest(), s.extract, s.mode, s.min_area,
                   s.canny_low, s.canny_high, s.smooth, s.fill, s.method,
-                  s.double_lines, s.dedup_ratio, s.dedup_dist, n_samples)
+                  s.double_lines, s.dedup_ratio, s.dedup_dist, n_samples,
+                  s.aspect)
         key = hashlib.sha1(repr(params).encode()).hexdigest()[:16]
         cache_file = cache_dir / f"cache_{key}.npz"
 
@@ -365,7 +373,7 @@ def extract_path(image_path: str | Path, s: Settings,
         chain, flags = _build_chain(contours)
     pixel_samples, jump_mask = _resample(chain, flags, n_samples)
     pixel_samples = _round_junctions(pixel_samples, jump_mask)
-    samples = _normalize(pixel_samples, s.fill)
+    samples = _normalize(pixel_samples, s.fill, _frame_w(s.aspect))
 
     if cache_file is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)

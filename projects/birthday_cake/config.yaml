@@ -1,0 +1,99 @@
+# birthday_cake — production 1080p60 config (cloned from prod_nika_dance)
+image: birthday_cake.png
+
+# --- fidelity (cake line art: fewer, cleaner contours than the Nika piece) ---
+duration: 90
+detail: high
+vectors: 1500
+samples: 20000
+mode: full           # keep every contour (drips, candles, flames, plate)
+extract: auto
+method: contour      # best for thin single-stroke line art
+min_area: 0.0        # keep thin small strokes (flame wicks, sprinkles)
+smooth: 0.18         # slightly heavier — cake shapes are smooth arcs/curves
+
+# --- framing / timeline ---
+fill: 0.78           # a cake is tall-ish; leave a little headroom
+hold: 0
+end_hold: 2          # linger on the finished drawing
+end_card: 3          # scale it up to fill frame as an outro shot
+
+# --- look ---
+theme: lotus         # festive pink (try: straw-hat gold, ace orange)
+trace_fade: 0.3      # subtle comet head, but path stays bright for the end card
+vignette: 0.15       # gentle center focus
+arrow_width: 0.5
+arrow_head: 0.5
+arrow_opacity: 0.5
+circle_opacity: 0.5
+circle_width: 1.0
+trace_width: 0.6     # slightly thinner drawn line for clean cake outlines
+trace_glow: 1.0
+jump_opacity: 0.4    # keep the many inter-stroke jumps faint/clean
+ghost_opacity: 0.06
+tip_glow: 0.6
+bloom: 0.35
+ghost: true
+ghost_mode: fadein   # ghost grows with progress — less clutter early
+label: true
+
+# --- view / output ---
+view: pip            # full render with a zoom inset following the pen
+zoom_factor: 8
+zoom_start: 4        # ease the inset magnification 4x -> 8x over the draw
+cam_lag: 0.3         # slight lazy-follow for an organic inset
+fps: 60
+parallel: true
+
+# --- shown vectors: 1000-vector fidelity, but a clean, watchable chain ---
+shown_vectors: 120   # only the 120 biggest epicycles draw as circles/arrows
+bridge_opacity: 0.15 # faint connector from the last shown vector to the pen
+
+# --- trace coloring (theme for now; drop a COLORED nika image to go original) ---
+trace_source: theme  # theme | original | gradient
+color_strength: 1.0  # (original) 0 = pure theme .. 1 = pure sampled
+color_segments: 300  # solid-color chunks along the path
+# color_image: birthday_cake_color.png   # (original) COLORED source to sample
+# gradient_colors: ["#E75480", "#FFC94D", "#4ECDC4"]  # (gradient) stops — party palette
+gradient_cycles: 1.0
+input_bg: auto       # source artwork bg; drives bg_color: auto
+keyline: 0.0         # 0..1 contrasting rim (raise if colors match the bg)
+
+# --- transparent export (for overlay compositing in your editor) ---
+transparent: false   # true = per-view .mov with alpha (skips bloom/pip/cards)
+
+# --- Ken Burns on the end reveal (needs end_reveal: original) ---
+reveal_zoom: 1.0     # >1 = slow push-in on the reveal image
+reveal_pan_x: 0.0    # -1..1 horizontal drift
+reveal_pan_y: 0.0    # -1..1 vertical drift
+
+# --- motion / background ---
+ease: inout          # none | in | out | inout — draw-speed easing (gentle in/out)
+                     # NOTE: timeline.json timestamps assume linear; use `none`
+                     # if you script narration to exact contour times.
+bg_color: "#0A0E1A"  # frame background (deep navy makes the trace pop)
+
+# --- reference imagery & reveals ---------------------------------------------
+# Drop the COLORED original into this folder, then set source_image + flip the
+# reveals to `original`. Until then leave them on `line`.
+# source_image: birthday_cake_color.png
+start_reveal: line   # none | line | original  (faint intro reference)
+start_opacity: 0.12  # opacity when start_reveal is 'original'
+end_reveal: line     # none | line | original  ← set to 'original' for the color reveal
+end_crossfade: 1.0   # seconds to dissolve the drawing into the end image
+
+# --- intro / outro title cards (uncomment titles to enable) ------------------
+# intro_title: "HAPPY BIRTHDAY"
+# intro_subtitle: "<boss's name>"
+# intro_seconds: 3
+# outro_title: "Many happy returns!"
+# outro_subtitle: "— from the team"
+# outro_seconds: 4
+
+# --- audio (uncomment to mux a music/narration bed into the finals) ----------
+# audio: track.mp3
+
+# --- vertical (9:16) short of a chosen window of the deliverable --------------
+shorts: false        # true = also emit birthday_cake_short.mp4 (1080x1920)
+shorts_start: 0.15   # crop window as a fraction of the full video (0..1)
+shorts_end: 0.60

@@ -12,7 +12,7 @@ from .image_to_path import PathData
 BG = (22, 22, 22)
 NORMAL = (80, 200, 90)
 JUMP = (230, 70, 60)
-TRACE = (255, 220, 60)
+TRACE = (255, 220, 60)     # fallback when no theme color is passed
 WARN = (255, 120, 80)
 OK = (150, 200, 150)
 PANEL_H = 720
@@ -59,8 +59,13 @@ def _left_panel(data: PathData) -> Image.Image:
     return base
 
 
-def _right_panel(recon: np.ndarray, jump_mask: np.ndarray,
-                 aspect: float) -> Image.Image:
+def _hex_rgb(hex_color: str) -> tuple[int, int, int]:
+    h = hex_color.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def _right_panel(recon: np.ndarray, jump_mask: np.ndarray, aspect: float,
+                 trace: tuple[int, int, int] = TRACE) -> Image.Image:
     w = max(64, int(PANEL_H * aspect))
     img = Image.new("RGB", (w, PANEL_H), BG)
     draw = ImageDraw.Draw(img)
@@ -70,16 +75,18 @@ def _right_panel(recon: np.ndarray, jump_mask: np.ndarray,
     cx, cy = recon.real.mean(), recon.imag.mean()
     xs = (recon.real - cx) * scale + w / 2
     ys = (cy - recon.imag) * scale + PANEL_H / 2  # manim y up -> canvas y down
-    _draw_polyline(draw, xs, ys, jump_mask, TRACE, (110, 90, 40), 2)
+    ghost = tuple(int(c * 0.42) for c in trace)  # dim the jump connectors
+    _draw_polyline(draw, xs, ys, jump_mask, trace, ghost, 2)
     return img
 
 
 def write_inspect(data: PathData, recon: np.ndarray, n_vectors: int,
-                  out_path: Path) -> Path:
+                  out_path: Path, trace_hex: str | None = None) -> Path:
     left = _left_panel(data)
     span_x = max(recon.real.max() - recon.real.min(), 1e-9)
     span_y = max(recon.imag.max() - recon.imag.min(), 1e-9)
-    right = _right_panel(recon, data.jump_mask, span_x / span_y)
+    trace = _hex_rgb(trace_hex) if trace_hex else TRACE
+    right = _right_panel(recon, data.jump_mask, span_x / span_y, trace)
 
     # effective-detail stats: reconstruction error at 1080p and jump budget
     err_units = float(np.abs(recon - data.samples).mean())

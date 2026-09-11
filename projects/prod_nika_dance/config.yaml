@@ -2,13 +2,10 @@
 image: nika_dance.png
 
 # --- fidelity (this image is detailed: hair swirls, fur, spots) ---
-# NOTE: currently set to the quick-test params (1000/10000/30fps/60s).
-# For the final production render, restore: duration 120, vectors 3000,
-# samples 30000, fps 60.
-duration: 60         # quick-test draw (prod: 120)
+duration: 120
 detail: high
-vectors: 1000        # quick test (prod: 3000)
-samples: 10000       # quick test (prod: 30000)
+vectors: 3000
+samples: 30000
 mode: full           # keep every contour (hair, fur, clothing detail)
 extract: auto
 method: contour      # best for thin single-stroke line art
@@ -44,7 +41,7 @@ view: pip            # full render with a zoom inset following the pen
 zoom_factor: 8
 zoom_start: 4        # ease the inset magnification 4x -> 8x over the draw
 cam_lag: 0.3         # slight lazy-follow for an organic inset
-fps: 30              # quick test (prod: 60)
+fps: 60
 parallel: true
 
 # --- shown vectors: 1000-vector fidelity, but a clean, watchable chain ---
