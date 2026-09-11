@@ -97,6 +97,13 @@ class Settings:
     aspect: str = "16:9"          # frame shape: 16:9 | 1:1 | 4:5 | 9:16
     preview: bool = False         # 854x480 @ 15fps fast iteration
     parallel: bool = False        # render full + zoom views as parallel processes
+    frame_workers: int = 1        # >1: split the draw into N frame ranges and
+                                  # render them as N processes, then stitch.
+                                  # Every frame is a pure function of t, so the
+                                  # output is identical to a sequential render;
+                                  # this is pure wall-clock speedup. Needs
+                                  # cam_lag 0 (a lazy camera integrates dt and
+                                  # so cannot start mid-timeline).
     pip_inset_label: bool = False  # keep the corner label inside the pip inset
     yes: bool = False             # skip the inspection confirmation prompt
     double_lines: bool = False    # draw both edges of stroked lines (default: one)
@@ -271,6 +278,17 @@ class Settings:
             raise SystemExit("--zoom-start must be >= 1")
         if not 0.0 <= self.start_t < self.end_t <= 1.0:
             raise SystemExit("need 0 <= start-t < end-t <= 1")
+        if self.frame_workers < 1:
+            raise SystemExit("frame_workers must be >= 1")
+        if self.frame_workers > 1 and self.cam_lag > 0 and self.view != "full":
+            # `follow` in scene.py damps toward the pen using dt and its own
+            # previous position, so frame N depends on frame N-1 and a slice
+            # cannot start cold. Everything else on the timeline is pure in t.
+            raise SystemExit(
+                "frame_workers > 1 needs cam_lag: 0 — a lazy zoom camera "
+                "carries state between frames, so frame ranges cannot be "
+                "rendered independently. Use cam_lag 0 (locked camera) or "
+                "frame_workers 1.")
         if not 0.0 < self.fill <= 1.0:
             raise SystemExit("--fill must be in (0, 1]")
 

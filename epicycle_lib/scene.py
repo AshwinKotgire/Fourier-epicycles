@@ -48,6 +48,37 @@ def _fit_image(img, frac: float = 0.9) -> None:
     img.move_to(ORIGIN)
 
 
+def slice_play_kwargs(sl: dict, run_time: float, ease) -> dict:
+    """run_time + rate_func that make this process render exactly frames
+    [lo, hi) of the sequential draw, at bit-identical tracker values.
+
+    Manim walks an animation over `np.arange(0, run_time, 1/fps)` and feeds
+    each element to `rate_func(t / run_time)`, so the whole draw is just an
+    indexable list of alphas. A slice re-plays a window of that list:
+
+      * `alphas` is the exact global sequence the sequential run would use,
+        so worker frame j reproduces global frame lo+j to the last bit.
+      * the run_time is half a frame SHORT of count/fps. `np.arange` overshoots
+        to count+1 elements for ~17% of counts (688 of the first 4000 at both
+        15 and 60 fps), and an extra element at every seam is a duplicated
+        frame — a visible hitch. Going half a step short always yields
+        exactly `count`.
+    """
+    fps = config.frame_rate
+    alphas = np.arange(0, run_time, 1.0 / fps) / run_time
+    lo, count, last = sl["lo"], sl["hi"] - sl["lo"], len(alphas) - 1
+    span = count - 0.5
+
+    def rate(a: float) -> float:
+        # a >= 1 is Animation.finish(), not a rendered frame: land on end_t
+        # exactly, the way the unsliced draw leaves the tracker for the outro.
+        if a >= 1.0:
+            return ease(1.0)
+        return ease(float(alphas[min(lo + int(round(a * span)), last)]))
+
+    return {"run_time": span / fps, "rate_func": rate}
+
+
 def mask_runs(mask: np.ndarray) -> list[tuple[int, int, bool]]:
     """Consecutive runs of the jump mask -> [(start, end_exclusive, is_jump)]."""
     runs = []
@@ -62,13 +93,16 @@ def mask_runs(mask: np.ndarray) -> list[tuple[int, int, bool]]:
 
 class EpicycleScene(MovingCameraScene):
     def __init__(self, coeffs, freqs, recon, jump_mask, settings, view,
-                 trace_colors=None, **kwargs):
+                 trace_colors=None, slice_spec=None, **kwargs):
         self.coeffs = np.asarray(coeffs)
         self.freqs = np.asarray(freqs, dtype=np.float64)
         self.recon = np.asarray(recon)
         self.jump_mask = np.asarray(jump_mask, dtype=bool)
         self.s = settings
         self.view = view
+        # {"lo", "hi", "is_last"}: render only frames [lo, hi) of the draw, for
+        # frame-range parallelism. None renders the whole timeline (the default).
+        self.slice_spec = slice_spec
         # (N, 3) RGB per recon point, or None for a single themed color
         self.trace_colors = (np.asarray(trace_colors, dtype=np.float64)
                              if trace_colors is not None else None)
@@ -475,10 +509,21 @@ class EpicycleScene(MovingCameraScene):
         #    sequence (hold, fade the machinery, end card, hold) only runs
         #    when requested, so by default the video is exactly the slice's
         #    share of `duration` seconds long.
-        self.play(tracker.animate.set_value(s.end_t),
-                  run_time=s.duration * (s.end_t - s.start_t),
-                  rate_func=EASE_FUNCS[s.ease])
-        if s.hold > 0 or s.end_hold > 0 or s.end_card > 0:
+        #
+        # Under slice_spec this process renders only its window of the draw
+        # and, unless it owns the last window, stops before the outro (which
+        # is wall-clock, not t-driven, so it belongs to exactly one worker).
+        ease_fn = EASE_FUNCS[s.ease]
+        draw_run_time = s.duration * (s.end_t - s.start_t)
+        if self.slice_spec is None:
+            play_kwargs = {"run_time": draw_run_time, "rate_func": ease_fn}
+            render_ending = True
+        else:
+            play_kwargs = slice_play_kwargs(self.slice_spec, draw_run_time,
+                                            ease_fn)
+            render_ending = self.slice_spec["is_last"]
+        self.play(tracker.animate.set_value(s.end_t), **play_kwargs)
+        if render_ending and (s.hold > 0 or s.end_hold > 0 or s.end_card > 0):
             if s.hold > 0:
                 self.wait(s.hold)
             vectors.clear_updaters()

@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
 
@@ -107,6 +108,16 @@ fps: 60              # production frame rate (--preview: 480-class @ 15fps)
 aspect: 16:9         # frame shape: 16:9 (1920x1080) | 1:1 (1080x1080)
                      #              | 4:5 (1080x1350) | 9:16 (1080x1920)
 parallel: true       # render full + zoom as two parallel processes
+frame_workers: 1     # >1 splits the DRAW into N frame ranges, renders them as
+                     # N processes and stitches the result. Every frame is a
+                     # pure function of the timeline, so the video is identical
+                     # to a sequential render (verified frame-for-frame on a
+                     # lossless export) — this is wall-clock only, not a
+                     # quality trade. Set it to your core count; ~360MB per
+                     # worker. Needs cam_lag: 0. Note the outro (fade + end
+                     # card + holds) is one serial chunk that cannot be split,
+                     # so it puts a floor on the time for short draws; extra
+                     # workers past that floor are dropped automatically.
 
 # --- shown vectors (visual density of the rotating chain) ---
 # shown_vectors: 150 # draw only the N largest epicycles as circles/arrows;
@@ -320,6 +331,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fps", type=int)
     p.add_argument("--parallel", action="store_true",
                    help="render full + zoom views as two parallel processes")
+    p.add_argument("--frame-workers", type=int, dest="frame_workers",
+                   help="split the draw into N frame ranges rendered as N "
+                        "processes and stitched (identical output, N-times "
+                        "faster); 0 = one per CPU core")
     p.add_argument("--pip-inset-label", action="store_true",
                    dest="pip_inset_label",
                    help="keep the corner label inside the pip inset "
@@ -356,11 +371,14 @@ def build_settings(args: argparse.Namespace) -> tuple[Settings, str | None]:
                     "color_strength", "color_segments", "gradient_cycles",
                     "input_bg", "keyline", "shown_vectors", "bridge_opacity",
                     "arrow_min_px",
-                    "reveal_zoom", "reveal_pan_x", "reveal_pan_y"]
+                    "reveal_zoom", "reveal_pan_x", "reveal_pan_y",
+                    "frame_workers"]
     for name in scalar_flags:
         value = getattr(args, name)
         if value is not None:
             setattr(s, name, value)
+    if s.frame_workers == 0:  # 0 = "use this machine"
+        s.frame_workers = os.cpu_count() or 1
     if args.no_ghost:
         s.ghost = False
     if args.no_label:
@@ -376,37 +394,180 @@ def build_settings(args: argparse.Namespace) -> tuple[Settings, str | None]:
 
 
 def render_view(view: str, coeffs, freqs, recon, jump_mask, s: Settings,
-                outdir: Path, name: str, trace_colors=None) -> Path:
+                outdir: Path, name: str, trace_colors=None,
+                slice_spec=None, tag: str = "") -> Path:
     from manim import tempconfig
 
     from epicycle_lib.scene import BG_COLOR, EpicycleScene
 
     px_w, px_h, fps = s.resolution()
     ext = "mov" if s.transparent else "mp4"
+    stem = f"{name}_{view}{tag}"
     # manim keeps frame_width independent of the pixel size, so set it from
     # the pixel aspect or a non-16:9 canvas renders a letterboxed 16:9 scene.
     cfg = {
         "pixel_width": px_w, "pixel_height": px_h, "frame_rate": fps,
         "frame_height": 8.0, "frame_width": 8.0 * px_w / px_h,
         "disable_caching": True, "verbosity": "ERROR",
-        "media_dir": str(outdir / f"media_{view}"),
-        "output_file": f"{name}_{view}",
+        "media_dir": str(outdir / f"media_{view}{tag}"),
+        "output_file": stem,
     }
+    if slice_spec is not None:
+        # N workers each drawing their own bar interleave into noise
+        cfg["progress_bar"] = "none"
     if s.transparent:
         cfg["transparent"] = True  # manim renders RGBA and writes a .mov
     else:
         cfg["background_color"] = s.bg_color or BG_COLOR
     with tempconfig(cfg):
         scene = EpicycleScene(coeffs, freqs, recon, jump_mask, s, view,
-                              trace_colors=trace_colors)
+                              trace_colors=trace_colors, slice_spec=slice_spec)
         scene.render()
         produced = Path(scene.renderer.file_writer.movie_file_path)
-    final = outdir / f"{name}_{view}.{ext}"
+    final = outdir / f"{stem}.{ext}"
     if produced.resolve() != final.resolve():
         shutil.move(str(produced), str(final))
     # manim leaves per-animation fragments under media/; only the moved file
     # is a real video, so drop the scratch tree to avoid confusion
-    shutil.rmtree(outdir / f"media_{view}", ignore_errors=True)
+    shutil.rmtree(outdir / f"media_{view}{tag}", ignore_errors=True)
+    return final
+
+
+def draw_frame_count(s: Settings) -> int:
+    """Frames manim will emit for the main draw — the exact length of its
+    `np.arange(0, run_time, 1/fps)` walk, float quirks included."""
+    import numpy as np
+
+    _, _, fps = s.resolution()
+    run_time = s.duration * (s.end_t - s.start_t)
+    return len(np.arange(0, run_time, 1.0 / fps))
+
+
+# Relative cost of the part of a frame that does NOT grow with the draw — the
+# ghost, the vector chain, the circles, all re-stroked every frame — with the
+# fully revealed trace counting 1.0. Measured on a 12s preview: the first slice
+# ran 0.35 s/frame and the last 1.26 s/frame, i.e. roughly 0.3 + (revealed).
+# Only used to balance the split; a wrong value costs a little speed, never
+# correctness.
+FIXED_FRAME_COST = 0.3
+
+
+def outro_frame_count(s: Settings) -> int:
+    """Frames in the wall-clock ending sequence, for LOAD BALANCING ONLY.
+
+    Mirrors the outro block of EpicycleScene.construct. It decides only how
+    many draw frames the worker that also renders the outro gives up, so if it
+    ever drifts from the scene the render stays exact — just less balanced.
+    """
+    if not (s.hold > 0 or s.end_hold > 0 or s.end_card > 0):
+        return 0
+    _, _, fps = s.resolution()
+    secs = s.hold + 3.0                     # hold, then the machinery fades
+    if s.end_card > 0:
+        secs += 0.6                         # label fade (or its matching wait)
+        if s.end_reveal == "original" and s.source_image:
+            secs += max(s.end_crossfade, 1e-3)
+        else:
+            secs += 2.0                     # 'line' scale-up / 'none' settle
+        secs += s.end_card
+    return int((secs + s.end_hold) * fps)
+
+
+def frame_slices(n_frames: int, workers: int, s: Settings | None = None,
+                 tail_frames: int = 0) -> list[tuple[int, int]]:
+    """Contiguous [lo, hi) frame windows covering every frame exactly once.
+
+    Integer frame indices are the whole point: seams must land between frames,
+    never inside one. Windows are equal in estimated COST rather than in frame
+    count, because a frame late in the draw re-strokes far more trace than an
+    early one, and because the worker holding the last window also renders the
+    outro. Equal frame counts would leave that worker running long after the
+    rest of the machine had gone idle.
+    """
+    import numpy as np
+
+    from epicycle_lib.scene import EASE_FUNCS
+
+    workers = max(1, min(workers, n_frames))
+    ease = EASE_FUNCS[s.ease] if s is not None else (lambda a: a)
+    revealed = np.array([ease(i / n_frames) for i in range(n_frames)])
+    cum = np.cumsum(FIXED_FRAME_COST + revealed)
+    # the outro renders over the finished trace, so it costs the full rate
+    tail_cost = tail_frames * (FIXED_FRAME_COST + 1.0)
+    if tail_cost > 0:
+        # The outro is ONE serial chunk that cannot be split, so the worker
+        # holding it sets a floor on the critical path. Past the point where
+        # every other window is already cheaper than that floor, more workers
+        # buy nothing — and each one still builds the whole scene, so they cost
+        # real memory. Cap instead of spawning them.
+        workers = min(workers, 1 + int(np.ceil(float(cum[-1]) / tail_cost)))
+    if workers == 1:
+        return [(0, n_frames)]
+    total = cum[-1] + tail_cost
+
+    edges, prev = [0], 0
+    for i in range(workers - 1):
+        b = int(np.searchsorted(cum, total * (i + 1) / workers)) + 1
+        # keep windows non-empty and strictly increasing, leaving at least one
+        # frame for each worker still to be placed
+        b = max(prev + 1, min(b, n_frames - (workers - 1 - i)))
+        edges.append(b)
+        prev = b
+    edges.append(n_frames)
+    return [(edges[i], edges[i + 1]) for i in range(workers)]
+
+
+def concat_parts(parts: list[Path], final: Path) -> None:
+    """Stream-copy the slice files into one video. This is the same packet
+    remux manim itself uses to join its per-animation partial movies
+    (SceneFileWriter.combine_files), so it re-encodes nothing."""
+    listing = final.with_name(final.stem + ".parts.txt")
+    listing.write_text("".join(f"file '{p.resolve()}'\n" for p in parts))
+    subprocess.run(
+        [ffmpeg_bin(), "-y", "-v", "error", "-f", "concat", "-safe", "0",
+         "-i", str(listing), "-c", "copy", str(final)], check=True)
+    listing.unlink()
+    for p in parts:
+        p.unlink()
+
+
+def render_view_parallel(view: str, coeffs, freqs, recon, jump_mask,
+                         s: Settings, outdir: Path, name: str,
+                         trace_colors=None, workers: int = 1) -> Path:
+    """Render the draw as N frame-range slices in parallel, then stitch.
+
+    Every frame is a pure function of the timeline value t, so slice k can be
+    computed without slice k-1 ever having existed. The rendered pixels are
+    identical to the sequential run; see slice_play_kwargs for how the frame
+    indices are kept exact across the seams.
+    """
+    t_start = time.perf_counter()
+    n_frames = draw_frame_count(s)
+    tail = outro_frame_count(s)
+    windows = frame_slices(n_frames, workers, s, tail)
+    if len(windows) < 2:
+        return render_view(view, coeffs, freqs, recon, jump_mask, s, outdir,
+                           name, trace_colors)
+    ext = "mov" if s.transparent else "mp4"
+    last = len(windows) - 1
+    sizes = [hi - lo for lo, hi in windows]
+    print(f"  {n_frames} draw frames + {tail} outro -> {len(windows)} slices "
+          f"of {min(sizes)}-{max(sizes)} frames "
+          f"(cost-weighted; the last also renders the outro)")
+    parts: list[Path] = [None] * len(windows)  # type: ignore[list-item]
+    with ProcessPoolExecutor(max_workers=len(windows)) as pool:
+        futures = {
+            pool.submit(render_view, view, coeffs, freqs, recon, jump_mask, s,
+                        outdir, name, trace_colors,
+                        {"lo": lo, "hi": hi, "is_last": i == last},
+                        f"_slice{i:03d}"): i
+            for i, (lo, hi) in enumerate(windows)}
+        for done, fut in enumerate(as_completed(futures), start=1):
+            parts[futures[fut]] = fut.result()
+            print(f"    {done}/{len(windows)} slices done "
+                  f"({time.perf_counter() - t_start:.0f}s)", flush=True)
+    final = outdir / f"{name}_{view}.{ext}"
+    concat_parts(parts, final)
     return final
 
 
@@ -643,7 +804,20 @@ def run(image_path: Path, s: Settings) -> dict[str, Path]:
         view_settings["zoom"] = replace(s, label=False)
 
     rendered: dict[str, Path] = {}
-    if s.parallel and len(views) > 1:
+    if s.frame_workers > 1:
+        # Frame-range parallelism already saturates the machine, so the views
+        # go one after the other; each one is internally parallel.
+        for view in views:
+            t0 = time.perf_counter()
+            print(f"Rendering {view} view, up to {s.frame_workers} "
+                  "frame workers...")
+            out = render_view_parallel(view, coeffs, freqs, recon,
+                                       data.jump_mask, view_settings[view],
+                                       outdir, name, trace_colors,
+                                       workers=s.frame_workers)
+            rendered[view] = out
+            print(f"  -> {out}  ({time.perf_counter() - t0:.1f}s)")
+    elif s.parallel and len(views) > 1:
         t0 = time.perf_counter()
         print(f"Rendering {' + '.join(views)} views in parallel...")
         with ProcessPoolExecutor(max_workers=len(views)) as pool:
