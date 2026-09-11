@@ -1,0 +1,130 @@
+# ganapati_pheta — square 1080x1080 production config
+# Source: a very dense brocade line drawing (8976 raw contours). The whole
+# design of this config is about choosing WHICH detail to draw and keeping the
+# pen line thin enough that neighbouring strokes stay separate.
+image: ganapati_pheta.png
+
+# --- fidelity: keep the hatching --------------------------------------------
+# min_area is the knob that decides how much of the brocade survives. Measured
+# contour counts and jump budgets (budget is 15% of path length):
+#   0.0003   ->  292 contours, jumps  9.5%  — motifs kept, hatch dashes dropped
+#   0.0001   ->  420 contours, jumps  9.7%
+#   0.00003  -> 1412 contours, jumps 11.4%  <- chosen: the hatching is included
+#   0.0      -> 5005 contours, jumps 17.3%  — over budget, pen jumps dominate
+# 0.00003 is the finest setting that still fits the jump budget, and it brings
+# the hatch dashes and dot rows back into the drawing.
+detail: high
+vectors: 12000       # recon error 0.85px. At 4000 the hatching is a blur
+                     # (3.63px error); 8000 -> 1.49px; 16000 -> 0.57px.
+samples: 120000
+mode: full
+extract: auto
+method: contour
+min_area: 0.00003
+smooth: 0.15         # light: firmer smoothing rounds the hatch dashes away
+dedup_ratio: 0.6
+dedup_dist: 0.02
+
+# Only ~640 of the 12000 vectors are even a pixel long on screen, so drawing
+# the rest costs render time and shows nothing. arrow_min_px skips them while
+# keeping the chain complete, which is what lets a 12000-vector count be
+# affordable. Verified: the last arrow still lands on the pen to 0.000000px.
+arrow_min_px: 0.5
+
+# --- framing / timeline -----------------------------------------------------
+# The drawn bbox is almost square (6.48 x 6.40 units), so it sits beautifully
+# in a 1:1 frame with no letterboxing.
+aspect: "1:1"        # 1080x1080 square canvas
+fill: 0.88           # ~7.0 of 8 units — fills the square, keeps a margin
+duration: 150        # 293 contours need time to read as deliberate drawing
+                     # See the render-cost note at the bottom of this file.
+hold: 0
+end_hold: 3
+end_card: 3
+
+# --- tip / line fineness ----------------------------------------------------
+# Adjacent brocade strokes are only ~2-3px apart once the art is scaled into a
+# 1080 frame, so the default 3px core with a 20px glow halo would smear them
+# into a solid band. Everything below is deliberately thinner than default.
+trace_width: 0.32    # core ~0.96px. Finer than before: with the hatching in,
+                     # neighbouring strokes are ~2px apart at 1080, so a 1.35px
+                     # core plus halo welded them into a solid band.
+trace_glow: 0.18     # faint halo only; 1.0 would bleed across neighbours
+# The tip is sized in SCENE units, so at tip_size 1.0 its outer halo is 5% of
+# frame height — 54px at 1080 — at every resolution. tip_glow only dims it, it
+# does not shrink it. That footprint smothers hatch strokes sitting ~2px apart,
+# so shrink it instead of just fading it.
+tip_size: 0.35       # outer halo ~19px, white core ~2.8px at 1080
+tip_glow: 0.5        # can afford more brightness now that it is small
+bloom: 0.15          # heavy bloom is what destroys fine line art
+trace_fade: 0.0      # ignored while the trace is colored, kept for clarity
+jump_opacity: 0.25   # 293 contours means many jumps — keep them nearly invisible
+ghost: true
+ghost_mode: fadein
+ghost_opacity: 0.05
+vignette: 0.18
+
+# --- 4000 circles need to be quiet -----------------------------------------
+arrow_width: 0.3
+arrow_head: 0.3
+arrow_opacity: 0.28
+circle_opacity: 0.22  # 4000 overlapping circles wash out the frame at 0.5
+circle_width: 0.6
+
+# --- look: magenta / violet / purple ---------------------------------------
+theme: violet         # #C77DFF — fallback + pen-tip halo color
+circle_color: "#7B3FE4"   # deep violet circles (replaces the 3b1b blue)
+vector_color: "#F0D9FF"   # pale lilac arrows instead of white
+trace_source: gradient
+gradient_colors: ["#FF2D95", "#C13BFF", "#7B2FF7"]  # magenta -> violet -> purple
+gradient_cycles: 1.5
+color_segments: 360
+color_strength: 1.0
+input_bg: auto
+keyline: 0.0
+bg_color: "#120A1F"   # deep aubergine — purple family, still dark enough
+
+# --- no shown_vectors: the full chain is drawn, so the final arrowhead sits
+# exactly on the pen. shown_vectors would build a shorter chain whose last
+# arrow lands on a partial sum (measured: 60px off on average, 250px worst).
+bridge_opacity: 0.0
+
+# --- view / output ----------------------------------------------------------
+view: pip            # full square + a zoom inset that follows the pen
+zoom_factor: 10      # higher than usual: the detail is very fine
+zoom_start: 5        # ease 5x -> 10x over the draw
+cam_lag: 0.25
+fps: 60
+parallel: true
+label: false         # no "N rotating vectors" corner label
+pip_inset_label: false
+
+# --- motion -----------------------------------------------------------------
+ease: inout          # NOTE: timeline.json timestamps assume linear (ease: none)
+
+# --- reveals (flip to `original` once a colored version exists) ------------
+# source_image: ganapati_pheta_color.png
+start_reveal: line
+start_opacity: 0.12
+end_reveal: line
+end_crossfade: 1.0
+reveal_zoom: 1.0
+reveal_pan_x: 0.0
+reveal_pan_y: 0.0
+
+# --- off for now ------------------------------------------------------------
+transparent: false
+shorts: false
+# audio: track.mp3
+# intro_title: "GANAPATI BAPPA"
+# intro_subtitle: "Fourier epicycles"
+# outro_title: "Ganpati Bappa Morya"
+
+# --- render cost (measured, not estimated) ----------------------------------
+# 1.09 s/frame at 12000 vectors / 120000 samples / arrow_min_px 0.5, 1080x1080.
+# 156s of video x 60fps = ~9400 frames = ~2.8h per view; the full and zoom
+# views run in parallel, so budget about 3h wall clock.
+# This is the price of the hatching. Ways to trade it back down:
+#   fps: 30            -> halves it, and 30fps is fine for a slow draw
+#   vectors: 8000      -> recon error 1.49px instead of 0.85px
+#   min_area: 0.0001   -> 420 contours, hatch dashes dropped again, much faster

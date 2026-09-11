@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from epicycle_lib.settings import THEMES, Settings
+from epicycle_lib.settings import ASPECTS, THEMES, Settings
 
 
 def ffmpeg_bin() -> str:
@@ -72,8 +72,11 @@ end_card: 0          # >0: scale the drawing up to fill the frame and hold (s)
 # start-t: 0         # render only a slice of the timeline (0..1)
 # end-t: 1
 
-theme: classic       # classic | straw-hat | zoro | ace
-# trace-color: "#FF7043"  # explicit hex trace color, overrides theme
+theme: classic       # classic | straw-hat | zoro | ace | saffron | krishna
+                     # | lotus | deep-red | violet
+# trace_color: "#FF7043"   # explicit hex trace color, overrides theme
+# circle_color: "#8A4FFF"  # epicycle circles (default 3b1b blue)
+# vector_color: "#F2D9FF"  # vector arrows (default white)
 trace_fade: 0        # >0 dims the settled path -> glowing comet head (try 0.6)
 vignette: 0          # 0..1 radial background gradient
 arrow_width: 0.5     # vector shaft thickness scale (1.0 = original)
@@ -83,6 +86,8 @@ arrow_opacity: 0.5   # vector arrow opacity scale (1.0 = original);
 circle_opacity: 0.5  # circle brightness scale (1.0 = original);
                      # larger circles stay brighter than smaller ones
 circle_width: 1.0    # circle stroke width scale; also tapers down the chain
+trace_width: 1.0     # drawn-line thickness scale (0.5 = half as thick); scales
+                     # the core, glow halos, keyline, jumps and ghost together
 trace_glow: 1.0      # trace glow halo intensity, 0..2 (0 = no halo)
 jump_opacity: 1.0    # jump-line visibility, 0..2 (0 = hidden)
 ghost_opacity: 0.06  # ghost preview stroke opacity
@@ -98,7 +103,9 @@ zoom_factor: 8
 # zoom-start: 4      # ease magnification from this factor to zoom_factor
                      # over the draw (default: fixed at zoom_factor)
 cam_lag: 0           # zoom camera: 0 = locked on pen tip; >0 = lazy follow (s)
-fps: 60              # production is 1920x1080 at this fps (--preview: 480p15)
+fps: 60              # production frame rate (--preview: 480-class @ 15fps)
+aspect: 16:9         # frame shape: 16:9 (1920x1080) | 1:1 (1080x1080)
+                     #              | 4:5 (1080x1350) | 9:16 (1080x1920)
 parallel: true       # render full + zoom as two parallel processes
 
 # --- shown vectors (visual density of the rotating chain) ---
@@ -225,6 +232,16 @@ def parse_args() -> argparse.Namespace:
                    help="trace-color preset")
     p.add_argument("--trace-color", dest="trace_color",
                    help="hex trace color, overrides --theme (e.g. '#FF7043')")
+    p.add_argument("--tip-size", dest="tip_size", type=float,
+                   help="pen-tip highlight radius scale (1.0 = 5%% of frame "
+                        "height; lower it so a broad tip stops hiding detail)")
+    p.add_argument("--arrow-min-px", dest="arrow_min_px", type=float,
+                   help="skip drawing arrows shorter than N screen pixels "
+                        "(chain stays exact; makes high --vectors affordable)")
+    p.add_argument("--circle-color", dest="circle_color",
+                   help="hex color for the epicycle circles (default 3b1b blue)")
+    p.add_argument("--vector-color", dest="vector_color",
+                   help="hex color for the vector arrows (default white)")
     p.add_argument("--ghost-mode", choices=["static", "fadein", "late"],
                    dest="ghost_mode",
                    help="static = always visible; fadein = grows with "
@@ -241,6 +258,8 @@ def parse_args() -> argparse.Namespace:
                    help="circle brightness scale (default 0.5, 1.0 = original)")
     p.add_argument("--circle-width", type=float, dest="circle_width",
                    help="circle stroke width scale; also tapers down the chain")
+    p.add_argument("--trace-width", type=float, dest="trace_width",
+                   help="drawn-line thickness scale (1.0 = original)")
     p.add_argument("--trace-glow", type=float, dest="trace_glow",
                    help="trace glow halo intensity, 0..2 (0 = no halo)")
     p.add_argument("--jump-opacity", type=float, dest="jump_opacity",
@@ -305,6 +324,8 @@ def parse_args() -> argparse.Namespace:
                    dest="pip_inset_label",
                    help="keep the corner label inside the pip inset "
                         "(suppressed by default)")
+    p.add_argument("--aspect", choices=list(ASPECTS),
+                   help="frame shape (default 16:9)")
     p.add_argument("--preview", action="store_true", help="854x480 @ 15fps")
     p.add_argument("--yes", action="store_true", help="skip the inspect prompt")
     p.add_argument("--via-svg", action="store_true", dest="via_svg",
@@ -323,15 +344,18 @@ def build_settings(args: argparse.Namespace) -> tuple[Settings, str | None]:
     scalar_flags = ["duration", "detail", "vectors", "samples", "mode", "extract",
                     "method", "min_area", "canny_low", "canny_high", "smooth", "fill",
                     "hold", "end_hold", "end_card", "start_t", "end_t",
-                    "theme", "trace_color", "ghost_mode", "vignette",
+                    "theme", "trace_color", "circle_color", "vector_color",
+                    "ghost_mode", "vignette",
                     "arrow_width", "arrow_head", "arrow_opacity",
-                    "circle_opacity", "circle_width", "trace_glow",
-                    "jump_opacity", "ghost_opacity", "tip_glow", "bloom",
+                    "circle_opacity", "circle_width", "trace_width", "trace_glow",
+                    "jump_opacity", "ghost_opacity", "tip_glow", "tip_size",
+                    "bloom",
                     "zoom_start", "dedup_ratio", "dedup_dist",
                     "trace_fade", "view", "zoom_factor", "cam_lag",
-                    "fps", "output", "trace_source", "color_image",
+                    "fps", "aspect", "output", "trace_source", "color_image",
                     "color_strength", "color_segments", "gradient_cycles",
                     "input_bg", "keyline", "shown_vectors", "bridge_opacity",
+                    "arrow_min_px",
                     "reveal_zoom", "reveal_pan_x", "reveal_pan_y"]
     for name in scalar_flags:
         value = getattr(args, name)
@@ -357,10 +381,13 @@ def render_view(view: str, coeffs, freqs, recon, jump_mask, s: Settings,
 
     from epicycle_lib.scene import BG_COLOR, EpicycleScene
 
-    px_w, px_h, fps = (854, 480, 15) if s.preview else (1920, 1080, s.fps)
+    px_w, px_h, fps = s.resolution()
     ext = "mov" if s.transparent else "mp4"
+    # manim keeps frame_width independent of the pixel size, so set it from
+    # the pixel aspect or a non-16:9 canvas renders a letterboxed 16:9 scene.
     cfg = {
         "pixel_width": px_w, "pixel_height": px_h, "frame_rate": fps,
+        "frame_height": 8.0, "frame_width": 8.0 * px_w / px_h,
         "disable_caching": True, "verbosity": "ERROR",
         "media_dir": str(outdir / f"media_{view}"),
         "output_file": f"{name}_{view}",
@@ -578,7 +605,8 @@ def run(image_path: Path, s: Settings) -> dict[str, Path]:
     print(f"Extracted {data.n_contours} contours -> {len(data.samples)} samples, "
           f"{len(coeffs)} vectors  ({time.perf_counter() - t0:.1f}s)")
 
-    inspect_png = write_inspect(data, recon, len(coeffs), outdir / "inspect.png")
+    inspect_png = write_inspect(data, recon, len(coeffs), outdir / "inspect.png",
+                                trace_hex=s.trace_hex)
     confirm_or_abort(inspect_png, s.yes)
 
     timeline = write_timeline(data.jump_mask, s.duration,
@@ -656,7 +684,7 @@ def run(image_path: Path, s: Settings) -> dict[str, Path]:
         print(f"  -> {pip_out}  ({time.perf_counter() - t0:.1f}s)")
 
     # -- post: title cards, audio, vertical short (all config-gated) --
-    px_w, px_h, fps = (854, 480, 15) if s.preview else (1920, 1080, s.fps)
+    px_w, px_h, fps = s.resolution()
     finals = [rendered["pip"]] if "pip" in rendered else [rendered[v] for v in views]
     if (s.intro_title or s.outro_title):
         print("Adding title cards...")
