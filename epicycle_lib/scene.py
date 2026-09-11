@@ -48,7 +48,7 @@ def _fit_image(img, frac: float = 0.9) -> None:
     img.move_to(ORIGIN)
 
 
-def slice_play_kwargs(sl: dict, run_time: float, ease) -> dict:
+def slice_play_kwargs(sl: dict, run_time: float, ease, on_frame=None) -> dict:
     """run_time + rate_func that make this process render exactly frames
     [lo, hi) of the sequential draw, at bit-identical tracker values.
 
@@ -74,7 +74,10 @@ def slice_play_kwargs(sl: dict, run_time: float, ease) -> dict:
         # exactly, the way the unsliced draw leaves the tracker for the outro.
         if a >= 1.0:
             return ease(1.0)
-        return ease(float(alphas[min(lo + int(round(a * span)), last)]))
+        j = int(round(a * span))
+        if on_frame is not None:
+            on_frame(j)   # live progress for the parent's aggregate bar
+        return ease(float(alphas[min(lo + j, last)]))
 
     return {"run_time": span / fps, "rate_func": rate}
 
@@ -93,7 +96,8 @@ def mask_runs(mask: np.ndarray) -> list[tuple[int, int, bool]]:
 
 class EpicycleScene(MovingCameraScene):
     def __init__(self, coeffs, freqs, recon, jump_mask, settings, view,
-                 trace_colors=None, slice_spec=None, **kwargs):
+                 trace_colors=None, slice_spec=None, progress_cb=None,
+                 **kwargs):
         self.coeffs = np.asarray(coeffs)
         self.freqs = np.asarray(freqs, dtype=np.float64)
         self.recon = np.asarray(recon)
@@ -103,6 +107,8 @@ class EpicycleScene(MovingCameraScene):
         # {"lo", "hi", "is_last"}: render only frames [lo, hi) of the draw, for
         # frame-range parallelism. None renders the whole timeline (the default).
         self.slice_spec = slice_spec
+        # called with this slice's frame index as each frame is computed
+        self.progress_cb = progress_cb
         # (N, 3) RGB per recon point, or None for a single themed color
         self.trace_colors = (np.asarray(trace_colors, dtype=np.float64)
                              if trace_colors is not None else None)
@@ -520,7 +526,7 @@ class EpicycleScene(MovingCameraScene):
             render_ending = True
         else:
             play_kwargs = slice_play_kwargs(self.slice_spec, draw_run_time,
-                                            ease_fn)
+                                            ease_fn, self.progress_cb)
             render_ending = self.slice_spec["is_last"]
         self.play(tracker.animate.set_value(s.end_t), **play_kwargs)
         if render_ending and (s.hold > 0 or s.end_hold > 0 or s.end_card > 0):

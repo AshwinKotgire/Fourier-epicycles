@@ -26,7 +26,8 @@ import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import wait as futures_wait
 from dataclasses import replace
 from pathlib import Path
 
@@ -412,16 +413,20 @@ def render_view(view: str, coeffs, freqs, recon, jump_mask, s: Settings,
         "media_dir": str(outdir / f"media_{view}{tag}"),
         "output_file": stem,
     }
+    progress_cb = None
     if slice_spec is not None:
-        # N workers each drawing their own bar interleave into noise
+        # N workers each drawing their own bar interleave into noise; the
+        # parent renders one aggregate bar from these counters instead
         cfg["progress_bar"] = "none"
+        progress_cb = _progress_writer(slice_spec.get("progress"))
     if s.transparent:
         cfg["transparent"] = True  # manim renders RGBA and writes a .mov
     else:
         cfg["background_color"] = s.bg_color or BG_COLOR
     with tempconfig(cfg):
         scene = EpicycleScene(coeffs, freqs, recon, jump_mask, s, view,
-                              trace_colors=trace_colors, slice_spec=slice_spec)
+                              trace_colors=trace_colors, slice_spec=slice_spec,
+                              progress_cb=progress_cb)
         scene.render()
         produced = Path(scene.renderer.file_writer.movie_file_path)
     final = outdir / f"{stem}.{ext}"
@@ -473,6 +478,59 @@ def outro_frame_count(s: Settings) -> int:
     return int((secs + s.end_hold) * fps)
 
 
+def _progress_writer(path: str | None, every: int = 3):
+    """Worker side: publish this slice's frame index for the parent to read.
+
+    A tiny counter file per slice, written every few frames. Deliberately
+    fire-and-forget — progress reporting must never be able to fail a render,
+    so every error here is swallowed.
+    """
+    if not path:
+        return None
+    target, state = Path(path), {"last": -every}
+
+    def on_frame(j: int) -> None:
+        if j - state["last"] < every:
+            return
+        state["last"] = j
+        try:
+            target.write_text(str(j))
+        except OSError:
+            pass
+
+    return on_frame
+
+
+def _per_slice(prog_dir: Path, sizes: list[int],
+               finished: set[int]) -> list[int]:
+    """Frames completed, per slice — the cost-weighted bar needs each slice
+    separately because a frame's cost depends on where it sits in the draw."""
+    out = []
+    for i, size in enumerate(sizes):
+        if i in finished:
+            out.append(size)
+            continue
+        try:
+            out.append(min(int((prog_dir / f"{i:03d}").read_text()), size))
+        except (OSError, ValueError):
+            out.append(0)
+    return out
+
+
+def frame_costs(n_frames: int, s: Settings | None = None):
+    """Relative cost of each draw frame: a fixed part (ghost, chain, circles,
+    all re-stroked every frame) plus the revealed trace, which grows with the
+    eased timeline. Shared by the slice split and the progress bar, so the bar
+    advances in step with real time instead of frame count."""
+    import numpy as np
+
+    from epicycle_lib.scene import EASE_FUNCS
+
+    ease = EASE_FUNCS[s.ease] if s is not None else (lambda a: a)
+    return FIXED_FRAME_COST + np.array(
+        [ease(i / n_frames) for i in range(n_frames)])
+
+
 def frame_slices(n_frames: int, workers: int, s: Settings | None = None,
                  tail_frames: int = 0) -> list[tuple[int, int]]:
     """Contiguous [lo, hi) frame windows covering every frame exactly once.
@@ -489,9 +547,7 @@ def frame_slices(n_frames: int, workers: int, s: Settings | None = None,
     from epicycle_lib.scene import EASE_FUNCS
 
     workers = max(1, min(workers, n_frames))
-    ease = EASE_FUNCS[s.ease] if s is not None else (lambda a: a)
-    revealed = np.array([ease(i / n_frames) for i in range(n_frames)])
-    cum = np.cumsum(FIXED_FRAME_COST + revealed)
+    cum = np.cumsum(frame_costs(n_frames, s))
     # the outro renders over the finished trace, so it costs the full rate
     tail_cost = tail_frames * (FIXED_FRAME_COST + 1.0)
     if tail_cost > 0:
@@ -554,18 +610,57 @@ def render_view_parallel(view: str, coeffs, freqs, recon, jump_mask,
     print(f"  {n_frames} draw frames + {tail} outro -> {len(windows)} slices "
           f"of {min(sizes)}-{max(sizes)} frames "
           f"(cost-weighted; the last also renders the outro)")
+    import numpy as np
+    from tqdm import tqdm
+
     parts: list[Path] = [None] * len(windows)  # type: ignore[list-item]
+    prog_dir = outdir / f".progress_{view}"
+    shutil.rmtree(prog_dir, ignore_errors=True)
+    prog_dir.mkdir(parents=True, exist_ok=True)
+    # Weight the bar by the cost model, not by frame count: frames late in the
+    # draw cost ~4x an early one, so a frame-count bar would race ahead and
+    # then crawl, and its ETA would be wildly optimistic for most of the run.
+    cum = np.concatenate([[0.0], np.cumsum(frame_costs(n_frames, s))])
+    total_cost = float(cum[-1]) + tail * (FIXED_FRAME_COST + 1.0)
+    finished: set[int] = set()
     with ProcessPoolExecutor(max_workers=len(windows)) as pool:
         futures = {
             pool.submit(render_view, view, coeffs, freqs, recon, jump_mask, s,
                         outdir, name, trace_colors,
-                        {"lo": lo, "hi": hi, "is_last": i == last},
+                        {"lo": lo, "hi": hi, "is_last": i == last,
+                         "progress": str(prog_dir / f"{i:03d}")},
                         f"_slice{i:03d}"): i
             for i, (lo, hi) in enumerate(windows)}
-        for done, fut in enumerate(as_completed(futures), start=1):
-            parts[futures[fut]] = fut.result()
-            print(f"    {done}/{len(windows)} slices done "
-                  f"({time.perf_counter() - t_start:.0f}s)", flush=True)
+        pending = set(futures)
+        # pin the width: tqdm's auto-detect can collapse to 0 columns when
+        # stderr is not a plain terminal, and a bar_format containing {bar}
+        # then renders as an empty line instead of a bar
+        bar = tqdm(total=round(total_cost, 1), disable=not sys.stderr.isatty(),
+                   ncols=shutil.get_terminal_size(fallback=(80, 24)).columns,
+                   bar_format="  {percentage:3.0f}%|{bar}| {elapsed}<{remaining}"
+                              " {postfix}")
+        while pending:
+            done, pending = futures_wait(pending, timeout=1.0)
+            for fut in done:
+                i = futures[fut]
+                parts[i] = fut.result()   # re-raises a worker's exception here
+                finished.add(i)
+            counts = _per_slice(prog_dir, sizes, finished)
+            frames = sum(counts)
+            # cost of every frame finished so far, slice by slice
+            cost_done = sum(float(cum[min(lo + n, hi)] - cum[lo])
+                            for (lo, hi), n in zip(windows, counts))
+            bar.n = round(min(cost_done, total_cost), 1)
+            bar.set_postfix_str(
+                f"{frames}/{n_frames} frames, "
+                f"{len(finished)}/{len(windows)} slices", refresh=False)
+            bar.refresh()
+        bar.n = round(total_cost, 1)
+        bar.refresh()
+        bar.close()
+    shutil.rmtree(prog_dir, ignore_errors=True)
+    print(f"    all {len(windows)} slices done "
+          f"({time.perf_counter() - t_start:.0f}s); stitching...", flush=True)
     final = outdir / f"{name}_{view}.{ext}"
     concat_parts(parts, final)
     return final
