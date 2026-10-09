@@ -4,9 +4,11 @@ __pycache__/
 *.pyc
 *.npz
 # project folders: track config.yaml + source image, not render artifacts
-projects/*/*.mp4
-projects/*/media_*/
-projects/*/inspect.png
-projects/*/timeline.json
-projects/*/*.mov
+projects/**/*.mp4
+projects/**/media_*/
+projects/**/inspect.png
+projects/**/timeline.json
+projects/**/*.mov
 render.log
+# Added by code-review-graph
+.code-review-graph/

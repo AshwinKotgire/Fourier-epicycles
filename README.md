@@ -195,6 +195,17 @@ track. `shorts: true` also writes a 1080×1920 vertical crop
 
 ## 4. Several images in one go
 
+**Series of projects (recommended):** keep one project folder per image under
+a parent folder (projects can be nested), each fully tunable on its own, then
+render them all with a loop. `projects/navaratri/` is set up this way; see
+its `README.md`:
+
+```bash
+for d in projects/navaratri/*/; do python epicycles.py "$d" --yes; done
+```
+
+**Batch file:** one shared look in a single YAML, no per-image configs.
+
 `epicycles_batch.py` renders a list of images with one shared look:
 
 ```bash
