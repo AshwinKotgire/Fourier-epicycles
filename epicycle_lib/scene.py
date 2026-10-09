@@ -48,6 +48,84 @@ def _fit_image(img, frac: float = 0.9) -> None:
     img.move_to(ORIGIN)
 
 
+REVEAL_MAX_PX = 1440       # source images are downscaled to this for the
+                           # per-frame alpha update of bleed / dissolve
+REVEAL_SOFT = {"bleed": 0.18, "dissolve": 0.08}  # width of the reveal front
+
+
+# The reveal helpers run inside forked render workers, so they must NOT touch
+# OpenCV: the parent already used cv2 to trace the line art, and cv2's thread
+# pool does not survive fork() — a forked child that calls cv2 blocks forever
+# on a dead lock (reproduced: the outro slice hung at 0% CPU). PIL and scipy
+# are fork-safe here.
+
+def _load_reveal_image(path: str) -> ImageMobject:
+    """source_image as an RGBA ImageMobject, capped at REVEAL_MAX_PX so the
+    per-frame alpha rewrite stays a few milliseconds."""
+    from PIL import Image
+    img = Image.open(path).convert("RGBA")
+    w, h = img.size
+    if max(h, w) > REVEAL_MAX_PX:
+        k = REVEAL_MAX_PX / max(h, w)
+        img = img.resize((max(1, round(w * k)), max(1, round(h * k))),
+                         Image.Resampling.BOX)
+    return ImageMobject(np.array(img))
+
+
+def reveal_field(img: ImageMobject, recon: np.ndarray, jump_mask: np.ndarray,
+                 transition: str, line_px: int = 3) -> np.ndarray:
+    """Per-pixel reveal time in 0..1 over the image's own pixel grid.
+
+    bleed: distance to the drawn lines AS PLACED ON SCREEN, so color floods
+    outward from the strokes the viewer just watched being drawn — whether or
+    not the original artwork lines up with the line art. Low-frequency noise
+    roughens the front so it reads as ink soaking in, not a ruler-straight
+    offset. dissolve: blocky per-pixel random order.
+    Seeded, so every view (and rerun) reveals identically.
+    """
+    from PIL import Image, ImageDraw
+    from scipy.ndimage import distance_transform_edt
+    h, w = img.get_pixel_array().shape[:2]
+    rng = np.random.default_rng(0)
+    if transition == "dissolve":
+        block = max(1, round(max(h, w) / 540))       # ~2px grain at 1080p
+        coarse = rng.random(((h + block - 1) // block, (w + block - 1) // block))
+        return np.kron(coarse, np.ones((block, block)))[:h, :w]
+
+    # scene -> image pixel coords (row 0 at the top edge of the image)
+    left, top = img.get_left()[0], img.get_top()[1]
+    sx, sy = w / img.width, h / img.height
+    canvas = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(canvas)
+    for a, b, jump in mask_runs(jump_mask):
+        if jump or b - a < 1:
+            continue
+        seg = recon[a:b + 1]
+        pts = list(zip(((seg.real - left) * sx).tolist(),
+                       ((top - seg.imag) * sy).tolist()))
+        draw.line(pts, fill=255, width=line_px)
+    lines = np.array(canvas) > 0
+    if not lines.any():
+        # drawing entirely off the image: grow from the centre instead
+        lines[h // 2, w // 2] = True
+    dist = distance_transform_edt(~lines)
+    alpha = img.orig_alpha_pixel_array > 0
+    scale = np.quantile(dist[alpha] if alpha.any() else dist, 0.98)
+    field = np.clip(dist / max(float(scale), 1e-6), 0.0, 1.0)
+    # smooth noise: a 24x24 random grid upsampled with bicubic interpolation
+    noise = np.array(Image.fromarray(rng.random((24, 24)).astype(np.float32),
+                                     mode="F").resize((w, h),
+                                                      Image.Resampling.BICUBIC))
+    return np.clip(field + 0.12 * (noise - 0.5), 0.0, 1.0)
+
+
+def reveal_alpha(field: np.ndarray, p: float, soft: float) -> np.ndarray:
+    """Opacity per pixel at transition progress p: a soft front sweeping
+    through `field` so every pixel is fully in exactly at p = 1."""
+    a = np.clip((p * (1.0 + soft) - field) / soft, 0.0, 1.0)
+    return a * a * (3.0 - 2.0 * a)
+
+
 def slice_play_kwargs(sl: dict, run_time: float, ease, on_frame=None) -> dict:
     """run_time + rate_func that make this process render exactly frames
     [lo, hi) of the sequential draw, at bit-identical tracker values.
@@ -100,6 +178,13 @@ class EpicycleScene(MovingCameraScene):
                  **kwargs):
         self.coeffs = np.asarray(coeffs)
         self.freqs = np.asarray(freqs, dtype=np.float64)
+        if settings.chain_order == "magnitude":
+            # Same terms, linked largest-first: a sum does not care about
+            # order, so the pen and trace are unchanged, but the drawn chain
+            # becomes a clean spiral of steadily shrinking circles instead
+            # of big and small terms interleaved by frequency.
+            idx = np.argsort(-np.abs(self.coeffs), kind="stable")
+            self.coeffs, self.freqs = self.coeffs[idx], self.freqs[idx]
         self.recon = np.asarray(recon)
         self.jump_mask = np.asarray(jump_mask, dtype=bool)
         self.s = settings
@@ -366,6 +451,20 @@ class EpicycleScene(MovingCameraScene):
         sub_freqs = freqs[order]
         n_show = len(order)
 
+        # chain_fade: opacity falls steadily from the biggest drawn epicycle to
+        # the smallest, measured on a LOG scale of size. Dense art has a flat
+        # spectrum, so a linear/sqrt ratio would leave a few bright giants and
+        # everything else uniformly dim; log size spreads the fade evenly along
+        # the chain. The floor (1 - chain_fade) keeps the tail a faint visible
+        # thread into the pen rather than detaching from it.
+        if s.chain_fade > 0 and n_show > 1:
+            log_mag = np.log(np.maximum(mags, 1e-12))
+            lo, hi = log_mag[order].min(), log_mag[order].max()
+            u = np.clip((log_mag - lo) / max(hi - lo, 1e-9), 0.0, 1.0)
+            fade = (1.0 - s.chain_fade) + s.chain_fade * u
+            brightness = np.minimum(1.0, 0.65 * s.circle_opacity * fade)
+            arrow_opacity = np.minimum(1.0, 0.95 * s.arrow_opacity * fade)
+
         if truncating:
             # full chain, so position[p] is absolute and the tail beyond the
             # last drawn segment is closed by `bridge` below
@@ -529,45 +628,91 @@ class EpicycleScene(MovingCameraScene):
                                             ease_fn, self.progress_cb)
             render_ending = self.slice_spec["is_last"]
         self.play(tracker.animate.set_value(s.end_t), **play_kwargs)
-        if render_ending and (s.hold > 0 or s.end_hold > 0 or s.end_card > 0):
+        # end_reveal: original always plays its transition, even with no
+        # end_card hold — the drawing becoming the original IS the ending.
+        reveal_original = bool(s.end_reveal == "original" and s.source_image)
+        from_last = reveal_original and s.reveal_from == "last_frame"
+        if render_ending and (s.hold > 0 or s.end_hold > 0 or s.end_card > 0
+                              or reveal_original):
             if s.hold > 0:
                 self.wait(s.hold)
             vectors.clear_updaters()
             tip_dot.clear_updaters()
             fading = [g for g in (vectors, circles, tip_dot) if len(g) > 0]
-            if fading:
+            if fading and not from_last:
                 self.play(*[FadeOut(g) for g in fading], run_time=3)
-            if s.end_card > 0:
+            if s.end_card > 0 or reveal_original:
                 # Outro shot, held for end_card seconds. end_reveal chooses:
                 #   line     = scale the finished line drawing up to fill frame
-                #   original = crossfade the drawing into the colored original
+                #   original = transition the drawing into the colored original
                 #   none     = just settle and hold (reset zoom to the full view)
                 # Identical timing in both views keeps full/zoom frame-synced.
                 # spend the same 0.6s whether or not this view has a label, so
                 # the timelines never drift (0.6s is a whole number of frames
-                # at both 15 and 60 fps).
-                if s.label:
+                # at both 15 and 60 fps). reveal_from: last_frame folds the
+                # label and machinery into the transition itself instead.
+                if from_last:
+                    if s.label:
+                        fading.append(label)
+                elif s.label:
                     self.play(FadeOut(label), run_time=0.6)
                 else:
                     self.wait(0.6)
                 drawing = VGroup(trace, ghost)
-                if s.end_reveal == "original" and s.source_image:
-                    img = ImageMobject(s.source_image)
-                    _fit_image(img, 0.92)
-                    anims = [FadeIn(img), FadeOut(drawing)]
+                if reveal_original:
+                    run_time = max(s.end_crossfade, 1e-3)
+                    # machinery clears in the first third of the transition
+                    early = lambda t: smooth(min(1.0, t / 0.35))  # noqa: E731
+                    anims = [FadeOut(g, rate_func=early) for g in fading] \
+                        if from_last else []
+                    if s.end_transition == "crossfade":
+                        img = ImageMobject(s.source_image)
+                        _fit_image(img, 0.92)
+                        anims += [FadeIn(img), FadeOut(drawing)]
+                    else:
+                        img = _load_reveal_image(s.source_image)
+                        _fit_image(img, 0.92)
+                        field = reveal_field(img, self.recon, self.jump_mask,
+                                             s.end_transition)
+                        soft = REVEAL_SOFT[s.end_transition]
+                        base_alpha = img.orig_alpha_pixel_array.astype(np.float32)
+                        progress = ValueTracker(0.0)
+
+                        def update_reveal(m: ImageMobject) -> None:
+                            a = reveal_alpha(field, progress.get_value(), soft)
+                            m.pixel_array[:, :, 3] = (base_alpha * a).astype(np.uint8)
+
+                        img.add_updater(update_reveal)
+                        update_reveal(img)
+                        # Behind the drawing, so the lines stay crisp on top
+                        # while the color soaks in around them.
+                        self.bring_to_back(img)
+                        if s.vignette > 0 and not s.transparent:
+                            self.bring_to_back(bg_img)
+                        anims.append(progress.animate(rate_func=smooth)
+                                     .set_value(1.0))
+                        # bleed: lines hold while the color spreads, then
+                        # melt away; dissolve: they fade evenly with it
+                        lines_out = ((lambda t: smooth(np.clip((t - 0.5) / 0.5, 0, 1)))
+                                     if s.end_transition == "bleed" else linear)
+                        anims.append(FadeOut(drawing, rate_func=lines_out))
                     if zoomed:
                         frame.clear_updaters()
                         anims.append(frame.animate.set(
                             width=config.frame_width).move_to(ORIGIN))
-                    self.play(*anims, run_time=max(s.end_crossfade, 1e-3))
+                    self.play(*anims, run_time=run_time)
+                    img.clear_updaters()
+                    img.set_opacity(1.0)
                     # Ken Burns: slow push-in / drift on the revealed image.
-                    if (s.reveal_zoom > 1.0 or s.reveal_pan_x or s.reveal_pan_y):
+                    ken_burns = (s.reveal_zoom > 1.0 or s.reveal_pan_x
+                                 or s.reveal_pan_y)
+                    if s.end_card > 0 and ken_burns:
                         shift = np.array([s.reveal_pan_x * config.frame_width * 0.1,
                                           s.reveal_pan_y * config.frame_height * 0.1,
                                           0.0])
                         self.play(img.animate.scale(s.reveal_zoom).shift(shift),
-                                  run_time=max(s.end_card, 1e-3), rate_func=smooth)
-                    else:
+                                  run_time=s.end_card, rate_func=smooth)
+                    elif s.end_card > 0:
                         self.wait(s.end_card)
                 elif s.end_reveal == "none":
                     if zoomed:

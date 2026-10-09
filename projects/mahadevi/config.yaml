@@ -1,0 +1,102 @@
+# mahadevi — Navaratri, production 1080p60 (layout follows ganapati_relaxing,
+# fine-line settings follow ganapati_pheta; colors: gold -> saffron -> kumkum)
+#
+#   preview (480p15, minutes):  python epicycles.py projects/mahadevi --preview --yes
+#   production (1080p60):       python epicycles.py projects/mahadevi --yes
+image: Orignal_images/mahadevi_lineart.png
+
+# --- fidelity (dense art: jewellery, crown, tiger stripes, lion manes) ---
+duration: 150        # 1220 contours need time to read as deliberate drawing
+vectors: 8000        # recon error 0.91px @1080p (4000 = 2.3px, visibly soft)
+samples: 80000
+mode: full
+extract: auto
+method: contour
+min_area: 0.0        # 0.0 is what keeps the PUPILS and nose line; 0.00003
+                     # already blanks the eyes, 0.0003 erases the whole face.
+                     # 1220 contours, jumps 11.9% of path (budget 15%)
+smooth: 0.15
+dedup_ratio: 0.6
+dedup_dist: 0.02
+arrow_min_px: 0.5    # draw every circle/arrow down to half a pixel; the chain
+                     # runs unbroken into the pen (0 = literally all 8000:
+                     # 2.8x slower, visually the same)
+chain_order: magnitude  # link largest circle first: the chain shrinks toward
+                     # the pen instead of tangling (same drawing)
+chain_fade: 0.85     # circles/arrows dim steadily from the biggest down to the
+                     # pen; the tail keeps 15% so the thread never detaches
+
+# --- framing / timeline ---
+aspect: "16:9"       # portrait art sits centered; the pip inset uses the side
+fill: 0.9
+hold: 0
+end_hold: 2          # linger on the revealed original at the very end
+
+# --- the ending: the drawing soaks into the colored original ---
+source_image: mahadevi.jpeg   # resolved next to the line art (Orignal_images/)
+end_reveal: original
+end_transition: bleed  # color spreads outward from the drawn lines
+reveal_from: last_frame  # start straight off the final drawn frame
+end_crossfade: 4     # seconds for the bleed
+end_card: 5          # hold on the original...
+reveal_zoom: 1.06    # ...with a slow, gentle push-in
+reveal_pan_x: 0.0
+reveal_pan_y: 0.0
+
+# --- look: thin pen, because neighbouring strokes are only a few px apart ---
+trace_width: 0.35   # tested 0.3/0.45/0.65 at 1080p: 0.65 merges the jewellery
+                     # and fills the pupils; 0.3 is crispest but reads faint
+trace_glow: 0.3
+tip_size: 0.4
+tip_glow: 0.5
+bloom: 0.2
+trace_fade: 0.0      # ignored while the trace is colored
+jump_opacity: 0.25   # many contours = many jumps; keep them nearly invisible
+ghost: true
+ghost_mode: fadein
+ghost_opacity: 0.05
+vignette: 0.0        # vignette paints a NEUTRAL grey backdrop over bg_color;
+                     # 0 keeps the maroon below
+# circles + arrows are the show: bold enough to read at 1080p (tested against
+# 0.25/0.6, which made the big circles ~16% opaque and sub-pixel thin)
+arrow_width: 0.9
+arrow_head: 0.8
+arrow_opacity: 1.2
+circle_opacity: 1.4
+circle_width: 1.5
+
+# --- colors: Navaratri gold -> saffron -> kumkum red ---
+theme: saffron                 # pen-tip halo + jump connectors
+circle_color: "#58C4DD"        # 3b1b blue circles
+vector_color: "#FFF1D0"        # warm ivory arrows
+trace_source: gradient
+gradient_colors: ["#FFD54A", "#FF9933", "#E53935"]  # gold -> saffron -> kumkum
+gradient_cycles: 1.0           # one sweep: starts gold, ends red
+color_segments: 360
+input_bg: auto
+keyline: 0.0
+bg_color: "#140808"            # near-black maroon: warm, lets gold glow
+
+# --- view / output ---
+view: pip            # full frame + zoom inset following the pen
+zoom_factor: 8
+zoom_start: 4        # ease the inset 4x -> 8x over the draw
+cam_lag: 0           # locked camera — required for frame_workers
+fps: 60
+parallel: true
+frame_workers: 16    # split the draw across 16 processes (20-core box)
+label: false
+ease: inout          # NOTE: timeline.json assumes linear; use none to script
+                     # narration to exact contour times
+start_reveal: line
+start_opacity: 0.12
+transparent: false
+
+# --- optional extras ---------------------------------------------------------
+# intro_title: "Jai Mata Di"      # (title font has no Devanagari glyphs)
+# intro_subtitle: "Navaratri"
+# outro_title: "Happy Navaratri"
+# audio: aarti.mp3                # drop the track in this folder
+shorts: false        # true = also emit a 1080x1920 vertical short
+shorts_start: 0.15
+shorts_end: 0.60

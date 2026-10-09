@@ -8,7 +8,9 @@ Usage (inside the `manim` conda env):
 Project-folder workflow:
     python epicycles.py init nika_dance --image assets/nika_dance.png
         -> creates projects/nika_dance/config.yaml (fully documented; the
-           image is copied into the folder). Edit it, then:
+           image is copied into the folder). Add --original color.png for
+           the color reveal, --from projects/X to copy X's tuned look.
+           Edit it, then:
     python epicycles.py projects/nika_dance
         -> runs the whole pipeline from that config; outputs land in the
            project folder. CLI flags still override (e.g. --preview).
@@ -22,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -66,6 +69,7 @@ smooth: 0.2          # 0 = raw pixel contours .. 1 = heavy simplification
 # dedup-ratio: 0.6   # stroke-dedup area-ratio gate; inner edges of thick
 # dedup-dist: 0.02   # lines are dropped only if they also hug the outer edge
                      # within this fraction of image size (protects detail)
+# double_lines: false  # true = keep BOTH edges of thick strokes
 
 fill: 0.8            # drawing height as a fraction of frame height
 hold: 0              # >0: hold after the draw before the machinery fades
@@ -94,6 +98,7 @@ trace_glow: 1.0      # trace glow halo intensity, 0..2 (0 = no halo)
 jump_opacity: 1.0    # jump-line visibility, 0..2 (0 = hidden)
 ghost_opacity: 0.06  # ghost preview stroke opacity
 tip_glow: 0.6        # glowing pen-tip highlight intensity (0 = off)
+tip_size: 1.0        # pen-tip dot size (0.3-0.5 for dense line art)
 bloom: 0.35          # post-render neon bloom strength (0 = off)
 ghost: true          # faint preview of the final shape from t=0
 ghost_mode: static   # static | fadein | late
@@ -106,8 +111,9 @@ zoom_factor: 8
                      # over the draw (default: fixed at zoom_factor)
 cam_lag: 0           # zoom camera: 0 = locked on pen tip; >0 = lazy follow (s)
 fps: 60              # production frame rate (--preview: 480-class @ 15fps)
-aspect: 16:9         # frame shape: 16:9 (1920x1080) | 1:1 (1080x1080)
-                     #              | 4:5 (1080x1350) | 9:16 (1080x1920)
+aspect: "16:9"       # frame shape: "16:9" (1920x1080) | "1:1" (1080x1080)
+                     #   | "4:5" (1080x1350) | "9:16" (1080x1920) — keep the
+                     #   quotes: unquoted, YAML reads 16:9 as a number
 parallel: true       # render full + zoom as two parallel processes
 frame_workers: 1     # >1 splits the DRAW into N frame ranges, renders them as
                      # N processes and stitches the result. Every frame is a
@@ -125,6 +131,14 @@ frame_workers: 1     # >1 splits the DRAW into N frame ranges, renders them as
                      # the traced shape still uses the full `vectors` count.
                      # High fidelity + a clean, watchable chain. (default: all)
 bridge_opacity: 0.15 # faint connector from the last shown vector to the pen
+arrow_min_px: 0      # >0: skip drawing arrows/circles smaller than this many
+                     # screen px; the chain still lands exactly on the pen.
+                     # 0.5 makes thousands of vectors affordable (~3x faster)
+chain_order: frequency  # frequency = 3b1b order | magnitude = largest circle
+                     # first, shrinking toward the pen. Same drawing; use
+                     # magnitude for dense art, where frequency order tangles
+chain_fade: 0.0      # 0..1: circles/arrows dim steadily from the biggest to
+                     # the pen; the tail keeps (1 - chain_fade) of full opacity
 
 # --- trace coloring ---
 trace_source: theme  # theme = single color | original = the artwork's own
@@ -156,8 +170,16 @@ bg_color: "#161616"  # frame background color, or "auto" to pick a frame that
 start_reveal: line   # none | line | original — faint intro reference
 start_opacity: 0.12  # opacity when start_reveal is 'original'
 end_reveal: line     # none | line | original — what the end card shows
-end_crossfade: 1.0   # seconds to dissolve the drawing into the end image
-                     # (end_card must be > 0 for any end reveal to show)
+end_crossfade: 1.0   # seconds for the drawing -> end image transition
+                     # ('line'/'none' reveals need end_card > 0 to show;
+                     # 'original' always plays its transition)
+end_transition: crossfade  # crossfade | bleed | dissolve — how the drawing
+                     # becomes source_image. bleed = color soaks outward from
+                     # the drawn lines (try end_crossfade: 4); dissolve =
+                     # grainy pixel fade. Alignment with the line art is not
+                     # required.
+reveal_from: clean   # clean = fade circles/vectors (3s) then reveal;
+                     # last_frame = transition straight off the final frame
 reveal_zoom: 1.0     # >1 = slow Ken Burns push-in on the reveal image
 reveal_pan_x: 0.0    # -1..1 horizontal drift during the reveal
 reveal_pan_y: 0.0    # -1..1 vertical drift during the reveal
@@ -180,12 +202,27 @@ shorts_end: 1.0
 """
 
 
+def _set_key(text: str, key: str, value: str) -> str:
+    """Set `key: value` in a YAML config text, uncommenting the key if it is
+    commented out and keeping any trailing comment; appends if absent."""
+    pat = re.compile(rf"^#?[ \t]*{key}:[^\n#]*?(?P<c>[ \t]+#[^\n]*)?$", re.M)
+    line = f"{key}: {value}"
+    if pat.search(text):
+        return pat.sub(lambda m: line + (m.group("c") or ""), text, count=1)
+    return text.rstrip("\n") + f"\n{line}\n"
+
+
 def init_project(argv: list[str]) -> None:
     p = argparse.ArgumentParser(
         prog="epicycles.py init",
         description="Scaffold a project folder with a documented config.")
     p.add_argument("name", help="project name -> projects/<name>/")
-    p.add_argument("--image", help="input image; copied into the folder")
+    p.add_argument("--image", help="input line art; copied into the folder")
+    p.add_argument("--original", help="colored original the drawing turns "
+                   "into at the end; copied in, enables the bleed reveal")
+    p.add_argument("--from", dest="from_project", metavar="PROJECT",
+                   help="start from another project's config.yaml (e.g. "
+                   "projects/mahadevi) instead of the generic template")
     args = p.parse_args(argv)
 
     folder = Path("projects") / args.name
@@ -193,18 +230,45 @@ def init_project(argv: list[str]) -> None:
     if cfg_file.exists():
         raise SystemExit(f"{cfg_file} already exists - edit it or pick "
                          "another name")
+    for path in (args.image, args.original):
+        if path and not Path(path).exists():
+            raise SystemExit(f"No such image: {path}")
+    base = None
+    if args.from_project:
+        base = Path(args.from_project)
+        base = base / "config.yaml" if base.is_dir() else base
+        if not base.exists():
+            raise SystemExit(f"No config to copy at {base}")
     folder.mkdir(parents=True, exist_ok=True)
 
     image_value = "CHANGE_ME.png   # <- point this at your input image"
     if args.image:
-        src = Path(args.image)
-        if not src.exists():
-            raise SystemExit(f"No such image: {src}")
-        shutil.copy2(src, folder / src.name)
-        image_value = src.name
-    cfg_file.write_text(PROJECT_CONFIG_TEMPLATE.format(
-        folder=folder, image=image_value))
-    print(f"Created {cfg_file}")
+        shutil.copy2(args.image, folder / Path(args.image).name)
+        image_value = Path(args.image).name
+    if base is not None:
+        text = _set_key(base.read_text(), "image", image_value)
+        # its header comments name the old folder (run commands etc.)
+        text = text.replace(f"projects/{base.parent.name}", folder.as_posix())
+    else:
+        text = PROJECT_CONFIG_TEMPLATE.format(folder=folder, image=image_value)
+    if args.original:
+        shutil.copy2(args.original, folder / Path(args.original).name)
+        text = _set_key(text, "source_image", Path(args.original).name)
+        if base is None:  # the template defaults to a plain line ending
+            text = _set_key(text, "end_reveal", "original")
+            text = _set_key(text, "end_transition", "bleed")
+            text = _set_key(text, "reveal_from", "last_frame")
+            text = _set_key(text, "end_crossfade", "4")
+            text = _set_key(text, "end_card", "5")
+    elif base is not None and re.search(r"^end_reveal:[ \t]*original", text, re.M):
+        # the copied project reveals ITS original; without one of our own
+        # that would point at a file this folder does not have
+        text = _set_key(text, "end_reveal", "line")
+        text = re.sub(r"^source_image:", "# source_image:", text, flags=re.M)
+        print("No --original given: end_reveal set to 'line' "
+              "(add source_image later to turn the color reveal back on)")
+    cfg_file.write_text(text)
+    print(f"Created {cfg_file}" + (f" (from {base})" if base else ""))
     print(f"Edit it, then render with: python epicycles.py {folder}")
 
 
@@ -247,6 +311,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tip-size", dest="tip_size", type=float,
                    help="pen-tip highlight radius scale (1.0 = 5%% of frame "
                         "height; lower it so a broad tip stops hiding detail)")
+    p.add_argument("--chain-fade", type=float, dest="chain_fade",
+                   help="0..1 dim circles/arrows steadily toward the pen")
+    p.add_argument("--chain-order", dest="chain_order",
+                   choices=["frequency", "magnitude"],
+                   help="link epicycles in 3b1b frequency order or largest-first")
     p.add_argument("--arrow-min-px", dest="arrow_min_px", type=float,
                    help="skip drawing arrows shorter than N screen pixels "
                         "(chain stays exact; makes high --vectors affordable)")
@@ -317,6 +386,12 @@ def parse_args() -> argparse.Namespace:
                    help="faint connector from the last shown vector to the pen")
     p.add_argument("--transparent", action="store_true",
                    help="render with alpha -> per-view .mov for compositing")
+    p.add_argument("--end-transition", dest="end_transition",
+                   choices=["crossfade", "bleed", "dissolve"],
+                   help="how the drawing becomes source_image (end_reveal: original)")
+    p.add_argument("--reveal-from", dest="reveal_from",
+                   choices=["clean", "last_frame"],
+                   help="last_frame = transition straight off the final drawn frame")
     p.add_argument("--reveal-zoom", type=float, dest="reveal_zoom",
                    help=">1 = slow Ken Burns push-in on the reveal image")
     p.add_argument("--reveal-pan-x", type=float, dest="reveal_pan_x",
@@ -371,8 +446,9 @@ def build_settings(args: argparse.Namespace) -> tuple[Settings, str | None]:
                     "fps", "aspect", "output", "trace_source", "color_image",
                     "color_strength", "color_segments", "gradient_cycles",
                     "input_bg", "keyline", "shown_vectors", "bridge_opacity",
-                    "arrow_min_px",
+                    "arrow_min_px", "chain_order", "chain_fade",
                     "reveal_zoom", "reveal_pan_x", "reveal_pan_y",
+                    "end_transition", "reveal_from",
                     "frame_workers"]
     for name in scalar_flags:
         value = getattr(args, name)
@@ -464,13 +540,18 @@ def outro_frame_count(s: Settings) -> int:
     many draw frames the worker that also renders the outro gives up, so if it
     ever drifts from the scene the render stays exact — just less balanced.
     """
-    if not (s.hold > 0 or s.end_hold > 0 or s.end_card > 0):
+    reveal_original = bool(s.end_reveal == "original" and s.source_image)
+    from_last = reveal_original and s.reveal_from == "last_frame"
+    if not (s.hold > 0 or s.end_hold > 0 or s.end_card > 0 or reveal_original):
         return 0
     _, _, fps = s.resolution()
-    secs = s.hold + 3.0                     # hold, then the machinery fades
-    if s.end_card > 0:
-        secs += 0.6                         # label fade (or its matching wait)
-        if s.end_reveal == "original" and s.source_image:
+    secs = s.hold
+    if not from_last:
+        secs += 3.0                         # the machinery fades
+    if s.end_card > 0 or reveal_original:
+        if not from_last:
+            secs += 0.6                     # label fade (or its matching wait)
+        if reveal_original:
             secs += max(s.end_crossfade, 1e-3)
         else:
             secs += 2.0                     # 'line' scale-up / 'none' settle

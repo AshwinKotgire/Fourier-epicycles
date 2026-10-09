@@ -1,0 +1,90 @@
+# Navaratri series: several images, one shared look, one command.
+#
+#   python epicycles_batch.py configs/navaratri_batch.yaml --yes
+#
+# Paths:
+#   image:        relative to the repo root (where you run the command)
+#   source_image: relative to the image's own folder (like project configs)
+#   output:       where that job's videos go — give every job its own
+#
+# Batch has no --preview flag: set `preview: true` under defaults to test the
+# whole series quickly at 480p15, then flip it back to false for production.
+
+defaults:
+  preview: false
+
+  # --- the ending: drawing soaks into the colored original ---
+  end_reveal: original
+  end_transition: bleed
+  reveal_from: last_frame
+  end_crossfade: 4
+  end_card: 5
+  reveal_zoom: 1.06
+  end_hold: 2
+
+  # --- Navaratri colors: gold -> saffron -> kumkum red on maroon ---
+  theme: saffron
+  circle_color: "#58C4DD"      # 3b1b blue
+  vector_color: "#FFF1D0"
+  trace_source: gradient
+  gradient_colors: ["#FFD54A", "#FF9933", "#E53935"]
+  gradient_cycles: 1.0
+  color_segments: 360
+  bg_color: "#140808"
+  vignette: 0.0        # vignette would paint grey over the maroon
+
+  # --- fine-line look for detailed devotional line art ---
+  trace_width: 0.35
+  trace_glow: 0.3
+  tip_size: 0.4
+  tip_glow: 0.5
+  bloom: 0.2
+  jump_opacity: 0.25
+  ghost_mode: fadein
+  ghost_opacity: 0.05
+  arrow_width: 0.9
+  arrow_head: 0.8
+  arrow_opacity: 1.2
+  circle_opacity: 1.4
+  circle_width: 1.5
+  arrow_min_px: 0.5
+  chain_order: magnitude
+  chain_fade: 0.85
+  smooth: 0.15
+  dedup_ratio: 0.6
+  dedup_dist: 0.02
+
+  # --- view / speed ---
+  aspect: "16:9"
+  fill: 0.9
+  view: pip
+  zoom_factor: 8
+  zoom_start: 4
+  cam_lag: 0           # required for frame_workers
+  fps: 60
+  frame_workers: 16    # must be a number here (0 = auto only works in epicycles.py)
+  label: false
+  ease: inout
+
+jobs:
+  # Per image: the files, an output folder, and the knobs that depend on the
+  # artwork's density (check them with a single-image preview first).
+  - image: projects/mahadevi/Orignal_images/mahadevi_lineart.png
+    source_image: mahadevi.jpeg
+    output: projects/mahadevi
+    duration: 150
+    vectors: 8000
+    samples: 80000
+    min_area: 0.0      # faces need 0.0 to keep the pupils
+
+  # - image: projects/<next_devi>/Orignal_images/<next>_lineart.png
+  #   source_image: <next>.jpeg
+  #   output: projects/<next_devi>
+  #   duration: 120
+  #   vectors: 6000
+  #   samples: 60000
+  #   min_area: 0.0
+  #   gradient_colors: ["#FF4FA0", "#E53935", "#FFD54A"]  # any default can be overridden per job
+
+concat: false          # true = also stitch every job into one long video
+concat_output: output/navaratri_series.mp4

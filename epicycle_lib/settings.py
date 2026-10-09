@@ -114,6 +114,16 @@ class Settings:
     start_opacity: float = 0.12   # opacity when start_reveal is 'original'
     end_reveal: str = "line"      # none | line | original (what the end card shows)
     end_crossfade: float = 1.0    # seconds to dissolve the drawing into the end image
+    end_transition: str = "crossfade"  # crossfade | bleed | dissolve — how the
+                                  # drawing becomes source_image (end_reveal:
+                                  # original). bleed = color spreads outward
+                                  # from the drawn lines; dissolve = grainy
+                                  # per-pixel fade. Both work whether or not
+                                  # the original lines up with the line art.
+    reveal_from: str = "clean"    # clean = fade circles/vectors first (3s),
+                                  # then reveal; last_frame = transition
+                                  # straight off the final drawn frame, the
+                                  # machinery fading out as it goes
     # -- trace coloring -------------------------------------------------------
     trace_source: str = "theme"   # theme | original | gradient
     color_image: str | None = None  # image sampled for 'original'
@@ -132,6 +142,16 @@ class Settings:
                                   # circles/arrows; the trace still uses all
     bridge_opacity: float = 0.15  # faint connector from the last shown vector
                                   # to the true pen tip (only when shown_vectors)
+    chain_fade: float = 0.0       # 0..1: circles/arrows dim steadily from the
+                                  # biggest to the smallest (log-size scale);
+                                  # 1 - chain_fade is the tail's floor, so the
+                                  # chain stays a visible thread into the pen
+    chain_order: str = "frequency"  # frequency = 3b1b order (0, 1, -1, 2, ..);
+                                  # magnitude = largest circle first, so the
+                                  # chain shrinks steadily toward the pen.
+                                  # Same pen path either way; magnitude reads
+                                  # far cleaner on dense art, whose big terms
+                                  # are scattered across frequencies.
     arrow_min_px: float = 0.0     # >0: skip drawing arrows shorter than this
                                   # many screen pixels. The chain stays whole,
                                   # so the last arrow still lands exactly on
@@ -203,6 +223,10 @@ class Settings:
             raise SystemExit("--extract must be auto, otsu, alpha or canny")
         if self.method not in ("contour", "vtracer", "points"):
             raise SystemExit("--method must be contour, vtracer or points")
+        if isinstance(self.aspect, int):
+            # YAML 1.1 reads an unquoted 16:9 as the base-60 integer 969;
+            # undo that so `aspect: 16:9` works quoted or not.
+            self.aspect = f"{self.aspect // 60}:{self.aspect % 60}"
         if self.aspect not in ASPECTS:
             raise SystemExit(f"--aspect must be one of {list(ASPECTS)}")
         if self.view not in ("full", "zoom", "both", "pip"):
@@ -230,6 +254,10 @@ class Settings:
             raise SystemExit("start_opacity must be in 0..1")
         if self.end_crossfade < 0.0:
             raise SystemExit("end_crossfade must be >= 0")
+        if self.end_transition not in ("crossfade", "bleed", "dissolve"):
+            raise SystemExit("end_transition must be crossfade, bleed or dissolve")
+        if self.reveal_from not in ("clean", "last_frame"):
+            raise SystemExit("reveal_from must be clean or last_frame")
         if not 0.0 <= self.shorts_start < self.shorts_end <= 1.0:
             raise SystemExit("need 0 <= shorts_start < shorts_end <= 1")
         if ("original" in (self.start_reveal, self.end_reveal)
@@ -251,6 +279,10 @@ class Settings:
             raise SystemExit("shown_vectors must be >= 1")
         if not 0.0 <= self.bridge_opacity <= 1.0:
             raise SystemExit("bridge_opacity must be in 0..1")
+        if not 0.0 <= self.chain_fade <= 1.0:
+            raise SystemExit("chain_fade must be in 0..1")
+        if self.chain_order not in ("frequency", "magnitude"):
+            raise SystemExit("chain_order must be frequency or magnitude")
         if self.arrow_min_px < 0.0:
             raise SystemExit("arrow_min_px must be >= 0")
         if self.reveal_zoom < 1.0:
